@@ -1,0 +1,8 @@
+{
+  "Description": "Displays the title of the currently playing media.", 
+  "Name": "Media", 
+  "com.bioynx187.media.media": {
+    "Name": "CPU", 
+    "Tooltip": "This action displays the title of the currently playing media"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "Actions": [
+    {
+      "Icon": "icon", 
+      "Name": "Currently Playing", 
+      "States": [
+        {
+          "Image": "defaultImage",
+          "TitleAlignment": "middle", 
+          "FontSize": "17"
+        }
+      ], 
+      "SupportedInMultiActions": false,
+      "Tooltip": "This action displays the title of the currently playing media", 
+      "UUID": "com.bionyx187.media.media"
+    }
+  ], 
+  "SDKVersion": 2,
+  "Author": "Elgato", 
+  "CodePathWin": "media.exe", 
+  "Description": "Displays the current awesome", 
+  "Name": "CPU", 
+  "Icon": "pluginIcon", 
+  "URL": "https://www.bionyx187.com/media-streamdeck-plugin", 
+  "Version": "1.2",
+  "OS": [
+    {
+        "Platform": "windows", 
+        "MinimumVersion" : "10"
+    }
+  ],
+  "Software": 
+    {
+        "MinimumVersion" : "4.1"
+    }
+}
