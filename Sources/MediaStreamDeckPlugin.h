@@ -41,9 +41,12 @@ public:
 	void DeviceDidDisconnect(const std::string& inDeviceID) override;
 	
 	void SendToPlugin(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID) override;
+	void ReceiveSettings(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID) override;
 
 private:
-	
+	void StartCheckTimer(int period);
+	void StartUpdateTimer(int period);
+
 	void UpdateTimer();
 	void CheckMedia();
 	std::string utf8_encode(const std::wstring& wstr);
@@ -58,4 +61,5 @@ private:
 	unsigned int mTicks;
 	int mTextWidth;
 	winrt::hstring mTitle;
+	winrt::hstring mPaddedTitle;
 };

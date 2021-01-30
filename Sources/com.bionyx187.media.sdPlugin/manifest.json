@@ -11,6 +11,7 @@
         }
       ], 
       "SupportedInMultiActions": false,
+      "PropertyInspectorPath": "media.html",
       "Tooltip": "This action displays the title of the currently playing media", 
       "UUID": "com.bionyx187.media.media"
     }

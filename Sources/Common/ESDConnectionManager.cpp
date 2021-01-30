@@ -65,7 +65,7 @@ void ESDConnectionManager::OnMessage(websocketpp::connection_hdl, WebsocketClien
 	{
 		std::string message = inMsg->get_payload();
 		DebugPrint("OnMessage: %s\n", message.c_str());
-		
+
 		try
 		{
 			json receivedJson = json::parse(message);
@@ -106,6 +106,12 @@ void ESDConnectionManager::OnMessage(websocketpp::connection_hdl, WebsocketClien
 			else if (event == kESDSDKEventSendToPlugin)
 			{
 				mPlugin->SendToPlugin(action, context, payload, deviceID);
+			}
+			else if (event == kESDSDKEventDidReceiveSettings)
+			{
+				LogMessage("Got some settings");
+				mPlugin->ReceiveSettings(action, context, payload, deviceID);
+				LogMessage("Done with settings");
 			}
 		}
 		catch (...)

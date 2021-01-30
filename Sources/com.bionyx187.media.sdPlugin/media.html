@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>com.bionyx187.media.Configure</title>
+    <link rel="stylesheet" href="css\sdpi.css">
+</head>
+
+<body>
+    <div class="sdpi-wrapper">
+        <div class="sdpi-item">
+		<div class="sdpi-item-label">Media Check Interval (ms)</div>
+		<input class="spdi-item-value" id="check_time" value="" placeholder="1000" required pattern="\d{1,}" onchange="setSettings()">
+        </div>
+        <div class="sdpi-item">
+		<div class="sdpi-item-label">Text Redraw Interval (ms)</div>
+		<input class="spdi-item-value" id="refresh_time" value="" placeholder="250" required pattern="\d{2,}" onchange="setSettings()">
+        </div>
+     </div>
+     <script src="js\media.js"></script>
+</body>
+</html>

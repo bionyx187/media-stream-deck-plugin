@@ -15,6 +15,7 @@
 #include <atomic>
 
 #include "Common/ESDConnectionManager.h"
+#include "Common/EPLJSONUtils.h"
 
 
 class CallBackTimer
@@ -69,18 +70,8 @@ MediaStreamDeckPlugin::MediaStreamDeckPlugin()
 	// TODO: Configurable elements: textwidth (based on title font, can we query that?), update time, polling time
 	mTextWidth = 6;
 	mTicks = 0;
-
-
 	mMediaCheckTimer = new CallBackTimer();
-	mMediaCheckTimer->start(1000, [this]() {
-		this->CheckMedia();
-	});
-
 	mDisplayTimer = new CallBackTimer();
-	mDisplayTimer->start(250, [this]()
-	{
-		this->UpdateTimer();
-	});
 }
 
 MediaStreamDeckPlugin::~MediaStreamDeckPlugin()
@@ -121,15 +112,21 @@ void MediaStreamDeckPlugin::UpdateTimer()
 		mDataMutex.lock();
 
 		if (mTitle.size() > 0) {
-			if (mTicks > (mTitle.size())) {
+			// Pad the string for scrolling.
+			winrt::hstring titleCopy = mPaddedTitle;
+			std::wstring wtitle = titleCopy.c_str();
+			wtitle.insert(0, mTextWidth, ' ');
+			wtitle.append(mTextWidth, ' ');
+
+
+			if (mTicks > (wtitle.length() - mTextWidth)) {
 				mTicks = 0;
 			}
-			std::wstring title{ mTitle };
-			auto substring = title.substr(mTicks, mTextWidth);
-			mTicks++;
 
+			auto substring = wtitle.substr(mTicks, mTextWidth);
 			auto text = utf8_encode(substring);
-			mConnectionManager->LogMessage("UpdateTimer mTicks:" + std::to_string(mTicks) + " mTitle: " + winrt::to_string(mTitle) + " substring: " + text);
+			//mConnectionManager->LogMessage("UpdateTimer mTicks:" + std::to_string(mTicks) + " mTitle: " + winrt::to_string(mTitle) + " substring: |" + text +"|");
+			mTicks++;
 
 			mVisibleContextsMutex.lock();
 			for (const std::string& context : mVisibleContexts)
@@ -139,7 +136,7 @@ void MediaStreamDeckPlugin::UpdateTimer()
 
 		}
 		mVisibleContextsMutex.unlock();
-		mConnectionManager->LogMessage("UpdateTimer done");
+		//mConnectionManager->LogMessage("UpdateTimer done");
 		mDataMutex.unlock();
 	}
 }
@@ -147,27 +144,31 @@ void MediaStreamDeckPlugin::UpdateTimer()
 void MediaStreamDeckPlugin::CheckMedia() {
 	if (mConnectionManager != nullptr)
 	{
-		mConnectionManager->LogMessage("CheckMedia waiting for lock");
+		//mConnectionManager->LogMessage("CheckMedia waiting for lock");
 
 		mDataMutex.lock();
 
 		auto sessions = GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get().GetSessions();
-		mConnectionManager->LogMessage("CheckMedia mTicks:" + std::to_string(mTicks) + " mTitle: " + winrt::to_string(mTitle));
+		//mConnectionManager->LogMessage("CheckMedia mTicks:" + std::to_string(mTicks) + " mTitle: " + winrt::to_string(mTitle));
 
 		for (unsigned int i = 0; i < sessions.Size(); i++) {
 			auto session = sessions.GetAt(i);
 			auto tlProps = session.GetTimelineProperties();
 			auto properties = session.TryGetMediaPropertiesAsync().get();
 			auto status = session.GetPlaybackInfo().PlaybackStatus();
-			// TODO: this padding should be dynamic based on mTextWidth
 			auto title = properties.Title();
+
+			//mConnectionManager->LogMessage("Session #" + std::to_string(i) + " (" + std::to_string((int)status) + ") " + winrt::to_string(title));
 
 
 			if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
 				if (title != mTitle) {
 					mTicks = 0;
+					mTitle = title;
+
+					mPaddedTitle = mTitle;
 				}
-				mTitle = title;
+
 				break;
 			}
 		}
@@ -187,14 +188,18 @@ void MediaStreamDeckPlugin::KeyUpForAction(const std::string& inAction, const st
 
 void MediaStreamDeckPlugin::WillAppearForAction(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID)
 {
+	mConnectionManager->LogMessage("WillAppearForAction");
 	// Remember the context
 	mVisibleContextsMutex.lock();
 	mVisibleContexts.insert(inContext);
 	mVisibleContextsMutex.unlock();
+	ReceiveSettings(inAction, inContext, inPayload, inDeviceID);
 }
 
 void MediaStreamDeckPlugin::WillDisappearForAction(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID)
 {
+	mConnectionManager->LogMessage("WillDisappearForAction");
+
 	// Remove the context
 	mVisibleContextsMutex.lock();
 	mVisibleContexts.erase(inContext);
@@ -211,7 +216,34 @@ void MediaStreamDeckPlugin::DeviceDidDisconnect(const std::string& inDeviceID)
 	// Nothing to do
 }
 
-void MediaStreamDeckPlugin::SendToPlugin(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID)
+void MediaStreamDeckPlugin::SendToPlugin(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)
 {
 	// Nothing to do
+}
+
+void MediaStreamDeckPlugin::ReceiveSettings(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)
+{
+	json settings;
+	EPLJSONUtils::GetObjectByName(inPayload, "settings", settings);
+	auto check_time = EPLJSONUtils::GetIntByName(settings, "check_time");
+	auto refresh_time = EPLJSONUtils::GetIntByName(settings, "refresh_time");
+
+	// TODO: save the settings and only restart the timers if they've changed since this op isn't so cheap...
+	StartCheckTimer(check_time);
+	StartUpdateTimer(refresh_time);
+}
+
+void MediaStreamDeckPlugin::StartCheckTimer(int period)
+{
+	mMediaCheckTimer->start(period, [this]() {
+		this->CheckMedia();
+	});
+}
+
+void MediaStreamDeckPlugin::StartUpdateTimer(int period)
+{
+	mDisplayTimer->start(period, [this]()
+	{
+		this->UpdateTimer();
+	});
 }
