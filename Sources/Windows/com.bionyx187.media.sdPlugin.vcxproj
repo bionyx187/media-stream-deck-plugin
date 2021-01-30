@@ -88,8 +88,11 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
-    <TargetName>cpu</TargetName>
+    <TargetName>media</TargetName>
     <IncludePath>../Vendor/asio/include;../Vendor/websocketpp;$(IncludePath)</IncludePath>
+    <CustomBuildAfterTargets>
+    </CustomBuildAfterTargets>
+    <CustomBuildBeforeTargets>PostBuildEvent</CustomBuildBeforeTargets>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -116,7 +119,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions);ASIO_STANDALONE</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <AdditionalOptions>/Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
@@ -175,6 +178,18 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
+    <PostBuildEvent>
+      <Command>copy $(TargetPath) $(SolutionDir)\..\com.bionyx187.media.sdPlugin</Command>
+    </PostBuildEvent>
+    <CustomBuildStep>
+      <Command>copy /Y $(TargetPath) $(USERPROFILE)\AppData\Roaming\Elgato\StreamDeck\Plugins\com.bionyx187.media.sdPlugin</Command>
+    </CustomBuildStep>
+    <CustomBuildStep>
+      <Message>Copying plugin to Elgato Installation Directory</Message>
+      <TreatOutputAsContent>false</TreatOutputAsContent>
+      <Inputs>$(TargetPath)</Inputs>
+      <Outputs>_</Outputs>
+    </CustomBuildStep>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="..\Common\EPLJSONUtils.h" />

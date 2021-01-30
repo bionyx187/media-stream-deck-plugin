@@ -67,8 +67,19 @@ private:
 
 MediaStreamDeckPlugin::MediaStreamDeckPlugin()
 {
-	mTimer = new CallBackTimer();
-	mTimer->start(1000, [this]()
+	// TODO: Configurable elements: textwidth (based on title font, can we query that?), update time, polling time
+	mTextWidth = 6;
+	mTitle = "";
+	mTicks = 0;
+
+
+	mMediaCheckTimer = new CallBackTimer();
+	mMediaCheckTimer->start(1000, [this]() {
+		this->CheckMedia();
+	});
+
+	mDisplayTimer = new CallBackTimer();
+	mDisplayTimer->start(250, [this]()
 	{
 		this->UpdateTimer();
 	});
@@ -76,12 +87,19 @@ MediaStreamDeckPlugin::MediaStreamDeckPlugin()
 
 MediaStreamDeckPlugin::~MediaStreamDeckPlugin()
 {
-	if(mTimer != nullptr)
+	if(mDisplayTimer != nullptr)
 	{
-		mTimer->stop();
+		mDisplayTimer->stop();
 		
-		delete mTimer;
-		mTimer = nullptr;
+		delete mDisplayTimer;
+		mDisplayTimer = nullptr;
+	}
+
+	if (mMediaCheckTimer != nullptr) {
+		mMediaCheckTimer->stop();
+
+		delete mMediaCheckTimer;
+		mMediaCheckTimer = nullptr;
 	}
 }
 
@@ -92,40 +110,60 @@ void MediaStreamDeckPlugin::UpdateTimer()
 	//
 	if(mConnectionManager != nullptr)
 	{
-		mVisibleContextsMutex.lock();
-		mTicks++;
-		std::string artist, title;
+		mDataMutex.lock();
 
-		// This sorta works. When Windows has the pop-up system widget, it is aware of focus order of the windows
-		// and the widget follows the most recent window. I don't see how to do that here, so we'll only update text if
-		// we see playing media.
+		if (mTitle.length() > 0) {
+			if (mTicks > (mTitle.length())) {
+				mTicks = 0;
+			}
+			auto substring = mTitle.substr(mTicks, mTextWidth);
+			mTicks++;
+			mConnectionManager->LogMessage("UpdateTimer mTicks:" + std::to_string(mTicks) + " mTitle: " + mTitle + " substring: " + substring);
+
+
+
+			mVisibleContextsMutex.lock();
+			for (const std::string& context : mVisibleContexts)
+			{
+				mConnectionManager->SetTitle(substring, context, kESDSDKTarget_HardwareAndSoftware);
+			}
+
+		}
+		mVisibleContextsMutex.unlock();
+		mConnectionManager->LogMessage("UpdateTimer done");
+		mDataMutex.unlock();
+	}
+}
+
+void MediaStreamDeckPlugin::CheckMedia() {
+	if (mConnectionManager != nullptr)
+	{
+		mConnectionManager->LogMessage("CheckMedia waiting for lock");
+
+		mDataMutex.lock();
 
 		auto sessions = GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get().GetSessions();
-		//mConnectionManager->LogMessage(std::to_string(sessions.Size()) + " sessions detected");
+		mConnectionManager->LogMessage("CheckMedia mTicks:" + std::to_string(mTicks) + " mTitle: " + mTitle);
+
 		for (unsigned int i = 0; i < sessions.Size(); i++) {
 			auto session = sessions.GetAt(i);
+			auto tlProps = session.GetTimelineProperties();
 			auto properties = session.TryGetMediaPropertiesAsync().get();
 			auto status = session.GetPlaybackInfo().PlaybackStatus();
-			artist = winrt::to_string(properties.Artist());
-			title = winrt::to_string(properties.Title());
-			//mConnectionManager->LogMessage(title + " - " + artist + ":" + std::to_string((int)status));
+			auto artist = winrt::to_string(properties.Artist());
+			// TODO: this padding should be dynamic based on mTextWidth
+			auto title = "   " + winrt::to_string(properties.Title());
 
 
 			if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
-				// Draw up the info and stop looping.
-				// TODO: figure out how to make this fit, scroll, or whatever. If it's too big, it just don't work well.
-				// Possibilities: try and word wrap based on length, draw on a canvas, truncate?
-				for (const std::string& context : mVisibleContexts)
-				{
-					mConnectionManager->SetTitle(title, context, kESDSDKTarget_HardwareAndSoftware);
+				if (title != mTitle) {
+					mTicks = 0;
 				}
+				mTitle = title;
 				break;
 			}
 		}
-
-
-
-		mVisibleContextsMutex.unlock();
+		mDataMutex.unlock();
 	}
 }
 

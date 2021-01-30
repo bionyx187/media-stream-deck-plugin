@@ -45,11 +45,16 @@ public:
 private:
 	
 	void UpdateTimer();
+	void CheckMedia();
 	
 	std::mutex mVisibleContextsMutex;
+	std::mutex mDataMutex;
 	std::set<std::string> mVisibleContexts;
 	
 	CpuUsageHelper *mCpuUsageHelper = nullptr;
-	CallBackTimer *mTimer;
+	CallBackTimer* mDisplayTimer;
+	CallBackTimer *mMediaCheckTimer;
 	int mTicks;
+	int mTextWidth;
+	std::string mTitle;
 };
