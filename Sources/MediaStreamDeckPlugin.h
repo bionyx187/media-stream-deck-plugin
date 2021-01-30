@@ -45,9 +45,9 @@ public:
 
 private:
 	void StartCheckTimer(int period);
-	void StartUpdateTimer(int period);
+	void StartRefreshTimer(int period);
 
-	void UpdateTimer();
+	void RefreshTimer();
 	void CheckMedia();
 	std::string utf8_encode(const std::wstring& wstr);
 	
@@ -56,10 +56,9 @@ private:
 	std::set<std::string> mVisibleContexts;
 	
 	CpuUsageHelper *mCpuUsageHelper = nullptr;
-	CallBackTimer* mDisplayTimer;
+	CallBackTimer* mRefreshTimer;
 	CallBackTimer *mMediaCheckTimer;
 	unsigned int mTicks;
 	int mTextWidth;
 	winrt::hstring mTitle;
-	winrt::hstring mPaddedTitle;
 };
