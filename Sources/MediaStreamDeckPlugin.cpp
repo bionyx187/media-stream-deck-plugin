@@ -16,7 +16,8 @@
 
 #include "Common/ESDConnectionManager.h"
 
-
+#include <locale>
+#include <codecvt>
 
 class CallBackTimer
 {
@@ -69,7 +70,6 @@ MediaStreamDeckPlugin::MediaStreamDeckPlugin()
 {
 	// TODO: Configurable elements: textwidth (based on title font, can we query that?), update time, polling time
 	mTextWidth = 6;
-	mTitle = "";
 	mTicks = 0;
 
 
@@ -103,6 +103,16 @@ MediaStreamDeckPlugin::~MediaStreamDeckPlugin()
 	}
 }
 
+// Convert a wide Unicode string to an UTF8 string
+std::string MediaStreamDeckPlugin::utf8_encode(const std::wstring& wstr)
+{
+	if (wstr.empty()) return std::string();
+	int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
+	std::string strTo(size_needed, 0);
+	WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
+	return strTo;
+}
+
 void MediaStreamDeckPlugin::UpdateTimer()
 {
 	//
@@ -112,20 +122,21 @@ void MediaStreamDeckPlugin::UpdateTimer()
 	{
 		mDataMutex.lock();
 
-		if (mTitle.length() > 0) {
-			if (mTicks > (mTitle.length())) {
+		if (mTitle.size() > 0) {
+			if (mTicks > (mTitle.size())) {
 				mTicks = 0;
 			}
-			auto substring = mTitle.substr(mTicks, mTextWidth);
+			std::wstring title{ mTitle };
+			auto substring = title.substr(mTicks, mTextWidth);
 			mTicks++;
-			mConnectionManager->LogMessage("UpdateTimer mTicks:" + std::to_string(mTicks) + " mTitle: " + mTitle + " substring: " + substring);
 
-
+			auto text = utf8_encode(substring);
+			mConnectionManager->LogMessage("UpdateTimer mTicks:" + std::to_string(mTicks) + " mTitle: " + winrt::to_string(mTitle) + " substring: " + text);
 
 			mVisibleContextsMutex.lock();
 			for (const std::string& context : mVisibleContexts)
 			{
-				mConnectionManager->SetTitle(substring, context, kESDSDKTarget_HardwareAndSoftware);
+				mConnectionManager->SetTitle(text, context, kESDSDKTarget_HardwareAndSoftware);
 			}
 
 		}
@@ -143,16 +154,15 @@ void MediaStreamDeckPlugin::CheckMedia() {
 		mDataMutex.lock();
 
 		auto sessions = GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get().GetSessions();
-		mConnectionManager->LogMessage("CheckMedia mTicks:" + std::to_string(mTicks) + " mTitle: " + mTitle);
+		mConnectionManager->LogMessage("CheckMedia mTicks:" + std::to_string(mTicks) + " mTitle: " + winrt::to_string(mTitle));
 
 		for (unsigned int i = 0; i < sessions.Size(); i++) {
 			auto session = sessions.GetAt(i);
 			auto tlProps = session.GetTimelineProperties();
 			auto properties = session.TryGetMediaPropertiesAsync().get();
 			auto status = session.GetPlaybackInfo().PlaybackStatus();
-			auto artist = winrt::to_string(properties.Artist());
 			// TODO: this padding should be dynamic based on mTextWidth
-			auto title = "   " + winrt::to_string(properties.Title());
+			auto title = properties.Title();
 
 
 			if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {

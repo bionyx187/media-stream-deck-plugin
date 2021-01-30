@@ -46,6 +46,7 @@ private:
 	
 	void UpdateTimer();
 	void CheckMedia();
+	std::string utf8_encode(const std::wstring& wstr);
 	
 	std::mutex mVisibleContextsMutex;
 	std::mutex mDataMutex;
@@ -54,7 +55,7 @@ private:
 	CpuUsageHelper *mCpuUsageHelper = nullptr;
 	CallBackTimer* mDisplayTimer;
 	CallBackTimer *mMediaCheckTimer;
-	int mTicks;
+	unsigned int mTicks;
 	int mTextWidth;
-	std::string mTitle;
+	winrt::hstring mTitle;
 };
