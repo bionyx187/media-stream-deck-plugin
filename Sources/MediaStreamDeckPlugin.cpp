@@ -16,8 +16,6 @@
 
 #include "Common/ESDConnectionManager.h"
 
-#include <locale>
-#include <codecvt>
 
 class CallBackTimer
 {
