@@ -232,6 +232,14 @@ void MediaStreamDeckPlugin::ReceiveSettings(const std::string& inAction, const s
 	auto check_time = EPLJSONUtils::GetIntByName(settings, "check_time");
 	auto refresh_time = EPLJSONUtils::GetIntByName(settings, "refresh_time");
 
+	// TODO: make this more modular
+	if (check_time == 0) {
+		check_time = 1000;
+	}
+	if (refresh_time == 0) {
+		refresh_time = 250;
+	}
+
 	// TODO: save the settings and only restart the timers if they've changed since this op isn't so cheap...
 	StartCheckTimer(check_time);
 	StartRefreshTimer(refresh_time);
