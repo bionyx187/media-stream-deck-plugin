@@ -5,9 +5,9 @@
       "Name": "Currently Playing", 
       "States": [
         {
-          "Image": "defaultImage",
+          "Image": "mediaIcon",
           "TitleAlignment": "middle", 
-          "FontSize": "17"
+          "FontSize": "15"
         }
       ], 
       "SupportedInMultiActions": false,
@@ -22,9 +22,9 @@
   "Description": "Displays the currently playing media", 
   "Name": "Now Playing", 
   "Category": "Windows Media",
-  "Icon": "pluginIcon", 
+  "Icon": "mediaIcon", 
   "URL": "https://www.bionyx187.com/media-streamdeck-plugin", 
-  "Version": "1.2",
+  "Version": "0.69",
   "OS": [
     {
         "Platform": "windows", 

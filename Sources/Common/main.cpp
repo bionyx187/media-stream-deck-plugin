@@ -15,6 +15,7 @@
 #include "ESDLocalizer.h"
 #include "EPLJSONUtils.h"
 #include <winrt/base.h>
+#include "../Windows/pch.h"
 
 using namespace winrt;
 
