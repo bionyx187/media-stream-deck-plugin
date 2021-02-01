@@ -90,9 +90,9 @@
     <LinkIncremental>false</LinkIncremental>
     <TargetName>media</TargetName>
     <IncludePath>../Vendor/asio/include;../Vendor/websocketpp;$(IncludePath)</IncludePath>
-    <CustomBuildAfterTargets>
-    </CustomBuildAfterTargets>
-    <CustomBuildBeforeTargets>PostBuildEvent</CustomBuildBeforeTargets>
+    <CustomBuildAfterTargets>PostBuildEvent</CustomBuildAfterTargets>
+    <CustomBuildBeforeTargets>
+    </CustomBuildBeforeTargets>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -119,7 +119,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions);ASIO_STANDALONE</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <AdditionalOptions>/Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
@@ -164,7 +164,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions);ASIO_STANDALONE</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <AdditionalOptions>/Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
@@ -179,10 +179,10 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <PostBuildEvent>
-      <Command>copy $(TargetPath) $(SolutionDir)\..\com.bionyx187.media.sdPlugin</Command>
+      <Command>copy /Y $(TargetPath) $(SolutionDir)..\com.bionyx187.media.sdPlugin</Command>
     </PostBuildEvent>
     <CustomBuildStep>
-      <Command>copy /Y $(TargetPath) $(USERPROFILE)\AppData\Roaming\Elgato\StreamDeck\Plugins\com.bionyx187.media.sdPlugin</Command>
+      <Command>DistributionTool.exe -b -i $(SolutionDir)..\com.bionyx187.media.sdPlugin -o $(SolutionDir)..\..\Release</Command>
     </CustomBuildStep>
     <CustomBuildStep>
       <Message>Copying plugin to Elgato Installation Directory</Message>
@@ -190,6 +190,10 @@
       <Inputs>$(TargetPath)</Inputs>
       <Outputs>_</Outputs>
     </CustomBuildStep>
+    <PreBuildEvent>
+      <Command>del $(SolutionDir)..\..\Release\com.bionyx187.media.streamDeckPlugin</Command>
+      <Message>Cleaning previous plugin</Message>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="..\Common\EPLJSONUtils.h" />
