@@ -22,7 +22,6 @@ using namespace winrt;
 int main(int argc, const char* const argv[])
 {
 	winrt::init_apartment();
-
 	if (argc != 9)
 	{
 		DebugPrint("Invalid number of parameters %d instead of 9\n", argc);
@@ -87,7 +86,7 @@ int main(int argc, const char* const argv[])
 
 	// Initialize localization helper
 	std::string language = "en";
-	
+
 	try
 	{
 		json infoJson = json::parse(info);
@@ -110,6 +109,8 @@ int main(int argc, const char* const argv[])
 	// Connect and start the event loop
 	connectionManager->Run();
 
+	// Cleanup before exit
+	delete plugin;
 	return 0;
 }
 

@@ -38,7 +38,7 @@ public:
             _thd.join();
     }
 
-    void start(int interval, std::function<void(void)> func)
+    void start(int interval, std::function<int(int)> func)
     {
         if(_execute.load(std::memory_order_acquire))
         {
@@ -49,7 +49,7 @@ public:
         {
             while (_execute.load(std::memory_order_acquire))
             {
-                func();
+                currentTick = func(currentTick);
                 std::this_thread::sleep_for(std::chrono::milliseconds(interval));
             }
         });
@@ -60,6 +60,8 @@ public:
         return (_execute.load(std::memory_order_acquire) && _thd.joinable());
     }
 
+	int currentTick;
+
 private:
     std::atomic<bool> _execute;
     std::thread _thd;
@@ -67,33 +69,34 @@ private:
 
 MediaStreamDeckPlugin::MediaStreamDeckPlugin()
 {
-	// TODO: Configurable elements: textwidth should be configurable
+	// TODO: Configurable elements: mTextWidth should be configurable
 	mTextWidth = 6;
-	mTicks = 0;
-	mMediaCheckTimer = new CallBackTimer();
-	mRefreshTimer = new CallBackTimer();
+	auto async = GlobalSystemMediaTransportControlsSessionManager::RequestAsync();
+	mMgr = async.get();
+	async.Close();
+
+	mMgr.CurrentSessionChanged([this](GlobalSystemMediaTransportControlsSessionManager const& sender, CurrentSessionChangedEventArgs const& args) {
+		if (this != nullptr && this->mConnectionManager != nullptr) {
+			Log("Current Session Changed detected");
+			sender.GetCurrentSession().MediaPropertiesChanged({ this, &MediaStreamDeckPlugin::MediaChangedHandler });
+			sender.GetCurrentSession().PlaybackInfoChanged({ this, &MediaStreamDeckPlugin::PlaybackChangedHandler });
+		}
+	});
+
+	mMgr.GetCurrentSession().MediaPropertiesChanged({ this, &MediaStreamDeckPlugin::MediaChangedHandler });
+	mMgr.GetCurrentSession().PlaybackInfoChanged({ this, &MediaStreamDeckPlugin::PlaybackChangedHandler });
 }
 
 MediaStreamDeckPlugin::~MediaStreamDeckPlugin()
 {
-	if(mRefreshTimer != nullptr)
-	{
-		mRefreshTimer->stop();
-		
-		delete mRefreshTimer;
-		mRefreshTimer = nullptr;
-	}
-
-	if (mMediaCheckTimer != nullptr) {
-		mMediaCheckTimer->stop();
-
-		delete mMediaCheckTimer;
-		mMediaCheckTimer = nullptr;
+	for (const auto& [key, value] : mContextTimers) {
+		value->stop();
+		delete value;
 	}
 }
 
 // Convert a wide Unicode string to an UTF8 string
-std::string MediaStreamDeckPlugin::utf8_encode(const std::wstring& wstr)
+std::string MediaStreamDeckPlugin::UTF8Encode(const std::wstring& wstr)
 {
 	if (wstr.empty()) return std::string();
 	int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
@@ -102,115 +105,206 @@ std::string MediaStreamDeckPlugin::utf8_encode(const std::wstring& wstr)
 	return strTo;
 }
 
-void MediaStreamDeckPlugin::RefreshTimer()
+
+void MediaStreamDeckPlugin::MediaChangedHandler(GlobalSystemMediaTransportControlsSession const& sender, MediaPropertiesChangedEventArgs const& args)
+{
+	// Since this are running in separate threads, it's possible the plugin could be destructed before they execute, so it must
+	// verify 'this' is valid.
+	if (this != nullptr) {
+		Log("MediaPropertiesChanged detected");
+		CheckMedia();
+	}
+}
+
+void MediaStreamDeckPlugin::PlaybackChangedHandler(GlobalSystemMediaTransportControlsSession const& sender, PlaybackInfoChangedEventArgs const& args)
+{
+	// Since this are running in separate threads, it's possible the plugin could be destructed before they execute, so it must
+	// verify 'this' is valid.
+	if (this != nullptr) {
+		Log("PlaybackInfoChanged detected");
+		CheckMedia();
+	}
+}
+
+int MediaStreamDeckPlugin::RefreshTimer(int tick, const std::string& context)
 {
 	//
-	// Warning: UpdateTimer() is running in the timer thread
+	// This is running in an independent thread.
 	//
 	if(mConnectionManager != nullptr)
 	{
-		mDataMutex.lock();
 		std::string text;
 
+		// Make a local copy of the title
+		mTitleMutex.lock();
+		std::wstring wtitle(mTitle.c_str());
+		mTitleMutex.unlock();
+
 		// Only draw the title if set (i.e. media is actually playing)
-		if (mTitle.size() > 0) {
+		if (wtitle.length() > 0) {
 			// Pad the string for scrolling.
-			std::wstring wtitle = mTitle.c_str();
 			wtitle.insert(0, mTextWidth, ' ');
 			wtitle.append(mTextWidth, ' ');
 
 
-			if (mTicks > (wtitle.length() - mTextWidth)) {
-				mTicks = 0;
+			if (tick > (wtitle.length() - mTextWidth)) {
+				tick = 0;
 			}
 
-			auto substring = wtitle.substr(mTicks, mTextWidth);
-			text = utf8_encode(substring);
-			//mConnectionManager->LogMessage("UpdateTimer mTicks:" + std::to_string(mTicks) + " mTitle: " + winrt::to_string(mTitle) + " substring: |" + text +"|");
-			mTicks++;
+			auto substring = wtitle.substr(tick, mTextWidth);
+			text = UTF8Encode(substring);
 		}
 
-		mVisibleContextsMutex.lock();
-		for (const std::string& context : mVisibleContexts)
-		{
+
+		// Make sure this is still a valid context by looking for our entry in the timer map. If it's not there, the button got deactivated
+		// and we shouldn't draw.
+		mContextTimersMutex.lock();
+		if (mContextTimers.find(context) != mContextTimers.end()) {
 			mConnectionManager->SetTitle(text, context, kESDSDKTarget_HardwareAndSoftware);
 		}
-		mVisibleContextsMutex.unlock();
-		mDataMutex.unlock();
+		mContextTimersMutex.unlock();
+
+
+		if (text.size() > 0) {
+			return ++tick;
+		}
 	}
+	return 0;
 }
 
 void MediaStreamDeckPlugin::CheckMedia() {
 	if (mConnectionManager != nullptr)
 	{
-		//mConnectionManager->LogMessage("CheckMedia waiting for lock");
+		mTitleMutex.lock();
 
-		mDataMutex.lock();
+		auto sessions = mMgr.GetSessions();
 
-		auto sessions = GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get().GetSessions();
-		//mConnectionManager->LogMessage("CheckMedia mTicks:" + std::to_string(mTicks) + " mTitle: " + winrt::to_string(mTitle));
-
-		bool isPlaying = false;
+#if DEBUG
 		for (unsigned int i = 0; i < sessions.Size(); i++) {
 			auto session = sessions.GetAt(i);
 			auto tlProps = session.GetTimelineProperties();
-			auto properties = session.TryGetMediaPropertiesAsync().get();
-			auto status = session.GetPlaybackInfo().PlaybackStatus();
+			auto async = session.TryGetMediaPropertiesAsync();
+			auto properties = async.get();
 			auto thumbnail = properties.Thumbnail();
 			auto title = properties.Title();
+			auto status = session.GetPlaybackInfo().PlaybackStatus();
 
-			//mConnectionManager->LogMessage("Session #" + std::to_string(i) + " (" + std::to_string(static_cast<int>(status)) + ") " + winrt::to_string(title));
+			Log("Session #" + std::to_string(i) + " (" + std::to_string(static_cast<int>(status)) + ") " + winrt::to_string(title));
+		}
+#endif
 
+		auto session = mMgr.GetCurrentSession();
+		auto async = session.TryGetMediaPropertiesAsync();
+		auto properties = async.get();
+		auto title = properties.Title();
+		auto status = session.GetPlaybackInfo().PlaybackStatus();
 
-			if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
-				if (title != mTitle) {
-					mTicks = 0;
-					mTitle = title;
+		if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
+			if (title != mTitle) {
+				mTitle = title;
+			}
+		}
+		else {
+
+			// If the current session isn't playing, let's see if they have something playing somewhere else. This isn't perfect because
+			// Chrome does peculiar things with its sessions, but it's something. If you're listening to multiple things simultaneously,
+			// Windows is going to get confused too.
+
+			auto isPlaying = false;
+
+			for (unsigned int i = 0; i < sessions.Size(); i++) {
+				auto session = sessions.GetAt(i);
+				auto tlProps = session.GetTimelineProperties();
+				auto async = session.TryGetMediaPropertiesAsync();
+				auto properties = async.get();
+				auto thumbnail = properties.Thumbnail();
+				auto title = properties.Title();
+				auto status = session.GetPlaybackInfo().PlaybackStatus();
+
+				if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
+					if (title != mTitle) {
+						mTitle = title;
+					}
+					isPlaying = true;
+					break;
 				}
-				isPlaying = true;
-				break;
+			}
+
+			if (!isPlaying) {
+				mTitle = winrt::to_hstring("");
 			}
 		}
 
-		if (!isPlaying) {
-			mTitle = winrt::to_hstring("");
-			mTicks = 0;
-		}
-		mDataMutex.unlock();
+		mTitleMutex.unlock();
 	}
 }
 
-void MediaStreamDeckPlugin::KeyDownForAction(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID)
+void MediaStreamDeckPlugin::Log(const std::string& message)
 {
-	// Nothing to do
-}
-
-void MediaStreamDeckPlugin::KeyUpForAction(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID)
-{
-	// Nothing to do
+#if DEBUG
+	if (mConnectionManager != nullptr) {
+		mConnectionManager->LogMessage(message);
+	}
+#endif
 }
 
 void MediaStreamDeckPlugin::WillAppearForAction(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID)
 {
-	//mConnectionManager->LogMessage("WillAppearForAction");
-	// Remember the context
-	mVisibleContextsMutex.lock();
-	mVisibleContexts.insert(inContext);
-	mVisibleContextsMutex.unlock();
+	Log("WillAppearForAction: " + inAction + " context: " + inContext + " payload: " + inPayload.dump());
 	ReceiveSettings(inAction, inContext, inPayload, inDeviceID);
 }
 
 void MediaStreamDeckPlugin::WillDisappearForAction(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID)
 {
-	//mConnectionManager->LogMessage("WillDisappearForAction");
-
-	// Remove the context
-	mVisibleContextsMutex.lock();
-	mVisibleContexts.erase(inContext);
-	mVisibleContextsMutex.unlock();
+	Log("WillDisappearForAction: " + inAction + " payload: " + inPayload.dump());
+	// Remove the context and its associated timer
+	mContextTimersMutex.lock();
+	mContextTimers[inContext]->stop();
+	delete mContextTimers[inContext];
+	mContextTimers.erase(inContext);
+	mContextTimersMutex.unlock();
 }
 
-void MediaStreamDeckPlugin::DeviceDidConnect(const std::string& inDeviceID, const json &inDeviceInfo)
+void MediaStreamDeckPlugin::ReceiveSettings(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)
+{
+	Log("ReceiveSettings: " + inAction + " context: " + inContext + " payload: " + inPayload.dump());
+	json settings;
+	EPLJSONUtils::GetObjectByName(inPayload, "settings", settings);
+	auto refresh_time = EPLJSONUtils::GetIntByName(settings, "refresh_time");
+
+	if (refresh_time == 0) {
+		refresh_time = 250;
+	}
+
+	mContextTimersMutex.lock();
+	// This resets the display timer for the settings for this view.
+	StartRefreshTimer(refresh_time, inContext);
+	mContextTimersMutex.unlock();
+	CheckMedia();
+}
+
+void MediaStreamDeckPlugin::StartRefreshTimer(int period, const std::string& context)
+{
+	auto timer = new CallBackTimer();
+	mContextTimers[context] = timer;
+
+	timer->start(period, [this, context, timer](int tick)
+	{
+		return this->RefreshTimer(tick, context);
+	});
+}
+
+void MediaStreamDeckPlugin::KeyDownForAction(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)
+{
+	// Nothing to do
+}
+
+void MediaStreamDeckPlugin::KeyUpForAction(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)
+{
+	// Nothing to do
+}
+
+void MediaStreamDeckPlugin::DeviceDidConnect(const std::string& inDeviceID, const json& inDeviceInfo)
 {
 	// Nothing to do
 }
@@ -223,39 +317,4 @@ void MediaStreamDeckPlugin::DeviceDidDisconnect(const std::string& inDeviceID)
 void MediaStreamDeckPlugin::SendToPlugin(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)
 {
 	// Nothing to do
-}
-
-void MediaStreamDeckPlugin::ReceiveSettings(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)
-{
-	json settings;
-	EPLJSONUtils::GetObjectByName(inPayload, "settings", settings);
-	auto check_time = EPLJSONUtils::GetIntByName(settings, "check_time");
-	auto refresh_time = EPLJSONUtils::GetIntByName(settings, "refresh_time");
-
-	// TODO: make this more modular
-	if (check_time == 0) {
-		check_time = 1000;
-	}
-	if (refresh_time == 0) {
-		refresh_time = 250;
-	}
-
-	// TODO: save the settings and only restart the timers if they've changed since this op isn't so cheap...
-	StartCheckTimer(check_time);
-	StartRefreshTimer(refresh_time);
-}
-
-void MediaStreamDeckPlugin::StartCheckTimer(int period)
-{
-	mMediaCheckTimer->start(period, [this]() {
-		this->CheckMedia();
-	});
-}
-
-void MediaStreamDeckPlugin::StartRefreshTimer(int period)
-{
-	mRefreshTimer->start(period, [this]()
-	{
-		this->RefreshTimer();
-	});
 }

@@ -13,6 +13,7 @@
 
 #include "Common/ESDBasePlugin.h"
 #include <mutex>
+#include <set>
 
 #include <winrt/base.h>
 #include <winrt/Windows.Media.Control.h>
@@ -21,7 +22,6 @@
 using namespace winrt;
 using namespace Windows::Media::Control;
 
-class CpuUsageHelper;
 class CallBackTimer;
 
 class MediaStreamDeckPlugin : public ESDBasePlugin
@@ -44,21 +44,21 @@ public:
 	void ReceiveSettings(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID) override;
 
 private:
-	void StartCheckTimer(int period);
-	void StartRefreshTimer(int period);
-
-	void RefreshTimer();
+	void StartRefreshTimer(int period, const std::string& context);
+	int RefreshTimer(int tick, const std::string& context);
 	void CheckMedia();
-	std::string utf8_encode(const std::wstring& wstr);
-	
-	std::mutex mVisibleContextsMutex;
-	std::mutex mDataMutex;
-	std::set<std::string> mVisibleContexts;
-	
-	CpuUsageHelper *mCpuUsageHelper = nullptr;
-	CallBackTimer* mRefreshTimer;
-	CallBackTimer *mMediaCheckTimer;
-	unsigned int mTicks;
-	int mTextWidth;
+	void Log(const std::string& message);
+	void MediaChangedHandler(GlobalSystemMediaTransportControlsSession const& sender, MediaPropertiesChangedEventArgs  const& args);
+	void PlaybackChangedHandler(GlobalSystemMediaTransportControlsSession const& sender, PlaybackInfoChangedEventArgs const& args);
+
+	std::string UTF8Encode(const std::wstring& wstr);
+
+	std::map<std::string, CallBackTimer*> mContextTimers;
+	std::mutex mContextTimersMutex;
+
 	winrt::hstring mTitle;
+	std::mutex mTitleMutex;
+
+	int mTextWidth;
+	IGlobalSystemMediaTransportControlsSessionManager mMgr{ nullptr };
 };

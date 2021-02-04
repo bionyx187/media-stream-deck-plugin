@@ -109,9 +109,7 @@ void ESDConnectionManager::OnMessage(websocketpp::connection_hdl, WebsocketClien
 			}
 			else if (event == kESDSDKEventDidReceiveSettings)
 			{
-				LogMessage("Got some settings");
 				mPlugin->ReceiveSettings(action, context, payload, deviceID);
-				LogMessage("Done with settings");
 			}
 		}
 		catch (...)

@@ -80,6 +80,7 @@
     <LinkIncremental>true</LinkIncremental>
     <TargetName>media</TargetName>
     <IncludePath>../Vendor/asio/include;../Vendor/websocketpp;$(IncludePath)</IncludePath>
+    <CustomBuildAfterTargets>PostBuildEvent</CustomBuildAfterTargets>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
@@ -132,6 +133,20 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
+    <CustomBuildStep>
+      <Command>DistributionTool.exe -b -i $(SolutionDir)..\com.bionyx187.media.sdPlugin -o $(SolutionDir)..\..\Debug</Command>
+      <Message>Copying plugin to Elgato Installation Directory</Message>
+      <Outputs>_</Outputs>
+      <Inputs>$(TargetPath)</Inputs>
+      <TreatOutputAsContent>false</TreatOutputAsContent>
+    </CustomBuildStep>
+    <PreBuildEvent>
+      <Command>del $(SolutionDir)..\..\Debug\com.bionyx187.media.streamDeckPlugin</Command>
+      <Message>Cleaning previous Debug plugin</Message>
+    </PreBuildEvent>
+    <PostBuildEvent>
+      <Command>copy /Y $(TargetPath) $(SolutionDir)..\com.bionyx187.media.sdPlugin</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -192,7 +207,7 @@
     </CustomBuildStep>
     <PreBuildEvent>
       <Command>del $(SolutionDir)..\..\Release\com.bionyx187.media.streamDeckPlugin</Command>
-      <Message>Cleaning previous plugin</Message>
+      <Message>Cleaning previous Release plugin</Message>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
