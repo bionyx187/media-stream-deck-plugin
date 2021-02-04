@@ -47,6 +47,7 @@ private:
 	void StartRefreshTimer(int period, const std::string& context);
 	int RefreshTimer(int tick, const std::string& context);
 	void CheckMedia();
+	void LogSessions();
 	void Log(const std::string& message);
 	void MediaChangedHandler(GlobalSystemMediaTransportControlsSession const& sender, MediaPropertiesChangedEventArgs  const& args);
 	void PlaybackChangedHandler(GlobalSystemMediaTransportControlsSession const& sender, PlaybackInfoChangedEventArgs const& args);

@@ -78,6 +78,7 @@ MediaStreamDeckPlugin::MediaStreamDeckPlugin()
 	mMgr.CurrentSessionChanged([this](GlobalSystemMediaTransportControlsSessionManager const& sender, CurrentSessionChangedEventArgs const& args) {
 		if (this != nullptr && this->mConnectionManager != nullptr) {
 			Log("Current Session Changed detected");
+			LogSessions();
 			sender.GetCurrentSession().MediaPropertiesChanged({ this, &MediaStreamDeckPlugin::MediaChangedHandler });
 			sender.GetCurrentSession().PlaybackInfoChanged({ this, &MediaStreamDeckPlugin::PlaybackChangedHandler });
 		}
@@ -137,8 +138,10 @@ int MediaStreamDeckPlugin::RefreshTimer(int tick, const std::string& context)
 
 		// Make a local copy of the title
 		mTitleMutex.lock();
-		std::wstring wtitle(mTitle.c_str());
+		winrt::hstring localTitle(mTitle);
 		mTitleMutex.unlock();
+
+		std::wstring wtitle(localTitle);
 
 		// Only draw the title if set (i.e. media is actually playing)
 		if (wtitle.length() > 0) {
@@ -177,22 +180,6 @@ void MediaStreamDeckPlugin::CheckMedia() {
 	{
 		mTitleMutex.lock();
 
-		auto sessions = mMgr.GetSessions();
-
-#if DEBUG
-		for (unsigned int i = 0; i < sessions.Size(); i++) {
-			auto session = sessions.GetAt(i);
-			auto tlProps = session.GetTimelineProperties();
-			auto async = session.TryGetMediaPropertiesAsync();
-			auto properties = async.get();
-			auto thumbnail = properties.Thumbnail();
-			auto title = properties.Title();
-			auto status = session.GetPlaybackInfo().PlaybackStatus();
-
-			Log("Session #" + std::to_string(i) + " (" + std::to_string(static_cast<int>(status)) + ") " + winrt::to_string(title));
-		}
-#endif
-
 		auto session = mMgr.GetCurrentSession();
 		auto async = session.TryGetMediaPropertiesAsync();
 		auto properties = async.get();
@@ -211,6 +198,7 @@ void MediaStreamDeckPlugin::CheckMedia() {
 			// Windows is going to get confused too.
 
 			auto isPlaying = false;
+			auto sessions = mMgr.GetSessions();
 
 			for (unsigned int i = 0; i < sessions.Size(); i++) {
 				auto session = sessions.GetAt(i);
@@ -239,6 +227,25 @@ void MediaStreamDeckPlugin::CheckMedia() {
 	}
 }
 
+void MediaStreamDeckPlugin::LogSessions()
+{
+#if DEBUG
+	auto sessions = mMgr.GetSessions();
+
+	for (unsigned int i = 0; i < sessions.Size(); i++) {
+		auto session = sessions.GetAt(i);
+		auto tlProps = session.GetTimelineProperties();
+		auto async = session.TryGetMediaPropertiesAsync();
+		auto properties = async.get();
+		auto thumbnail = properties.Thumbnail();
+		auto title = properties.Title();
+		auto status = session.GetPlaybackInfo().PlaybackStatus();
+
+		Log("Session #" + std::to_string(i) + " (" + std::to_string(static_cast<int>(status)) + ") " + winrt::to_string(title));
+	}
+#endif
+}
+
 void MediaStreamDeckPlugin::Log(const std::string& message)
 {
 #if DEBUG
@@ -259,7 +266,6 @@ void MediaStreamDeckPlugin::WillDisappearForAction(const std::string& inAction, 
 	Log("WillDisappearForAction: " + inAction + " payload: " + inPayload.dump());
 	// Remove the context and its associated timer
 	mContextTimersMutex.lock();
-	mContextTimers[inContext]->stop();
 	delete mContextTimers[inContext];
 	mContextTimers.erase(inContext);
 	mContextTimersMutex.unlock();

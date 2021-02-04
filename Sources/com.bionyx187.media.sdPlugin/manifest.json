@@ -24,7 +24,7 @@
   "Category": "Windows Media",
   "Icon": "mediaIcon", 
   "URL": "https://www.bionyx187.com/media-streamdeck-plugin", 
-  "Version": "0.77",
+  "Version": "0.78",
   "OS": [
     {
         "Platform": "windows", 
