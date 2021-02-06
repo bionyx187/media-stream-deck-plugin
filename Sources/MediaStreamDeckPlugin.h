@@ -42,7 +42,7 @@ public:
 	
 	void SendToPlugin(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID) override;
 	void ReceiveSettings(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID) override;
-
+	void TitleParametersDidChange(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID) override;
 private:
 	void StartRefreshTimer(int period, const std::string& context);
 	int RefreshTimer(int tick, const std::string& context);
@@ -58,8 +58,9 @@ private:
 	std::mutex mContextTimersMutex;
 
 	std::wstring mTitle;
-	std::mutex mTitleMutex;
-
+	std::string mImage;
 	int mTextWidth;
+	std::mutex mButtonDataMutex; // protects mTitle, mImage, mTextWidth
+
 	IGlobalSystemMediaTransportControlsSessionManager mMgr{ nullptr };
 };

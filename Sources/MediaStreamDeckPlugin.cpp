@@ -18,6 +18,12 @@
 #include "Common/EPLJSONUtils.h"
 
 #include <winrt/Windows.Storage.Streams.h>
+#include <winrt/Windows.Graphics.Imaging.h>
+#include <winrt/Windows.Security.Cryptography.h>
+
+using namespace Windows::Graphics::Imaging;
+using namespace Windows::Storage::Streams;
+using namespace Windows::Security::Cryptography;
 
 class CallBackTimer
 {
@@ -68,10 +74,8 @@ private:
     std::thread _thd;
 };
 
-MediaStreamDeckPlugin::MediaStreamDeckPlugin()
+MediaStreamDeckPlugin::MediaStreamDeckPlugin() : mTextWidth(12)
 {
-	// TODO: Configurable elements: mTextWidth should be configurable
-	mTextWidth = 6;
 	mMgr = GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
 
 	mMgr.CurrentSessionChanged([this](GlobalSystemMediaTransportControlsSessionManager const& sender, CurrentSessionChangedEventArgs const& args) {
@@ -146,22 +150,23 @@ int MediaStreamDeckPlugin::RefreshTimer(int tick, const std::string& context)
 		std::string text;
 
 		// Make a local copy of the title
-		mTitleMutex.lock();
+		mButtonDataMutex.lock();
 		std::wstring wtitle(mTitle);
-		mTitleMutex.unlock();
+		auto width = mTextWidth;
+		mButtonDataMutex.unlock();
 
 		// Only draw the title if set (i.e. media is actually playing)
 		if (wtitle.length() > 0) {
 			// Pad the string for scrolling.
-			wtitle.insert(0, mTextWidth, ' ');
-			wtitle.append(mTextWidth, ' ');
+			wtitle.insert(0, width, ' ');
+			wtitle.append(width, ' ');
 
 
-			if (tick > (wtitle.length() - mTextWidth)) {
+			if (tick > (wtitle.length() - width)) {
 				tick = 0;
 			}
 
-			auto substring = wtitle.substr(tick, mTextWidth);
+			auto substring = wtitle.substr(tick, width);
 			text = UTF8Encode(substring);
 		}
 
@@ -170,6 +175,7 @@ int MediaStreamDeckPlugin::RefreshTimer(int tick, const std::string& context)
 		// and we shouldn't draw.
 		mContextTimersMutex.lock();
 		if (mContextTimers.find(context) != mContextTimers.end()) {
+			mConnectionManager->SetImage(mImage, context, kESDSDKTarget_HardwareAndSoftware);
 			mConnectionManager->SetTitle(text, context, kESDSDKTarget_HardwareAndSoftware);
 		}
 		mContextTimersMutex.unlock();
@@ -196,17 +202,6 @@ void MediaStreamDeckPlugin::CheckMedia() {
 			if (properties != nullptr) {
 				auto title = properties.Title();
 				auto status = currentSession.GetPlaybackInfo().PlaybackStatus();
-				auto thumbnail = properties.Thumbnail();
-
-				if (thumbnail != nullptr) {
-
-					auto t_async = thumbnail.OpenReadAsync();
-					auto result = t_async.get();
-					Log("ContentType: " + UTF8Encode(result.ContentType().c_str()));
-				}
-				else {
-					Log("NO THUMBNAIL");
-				}
 
 				if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
 					currentTitle = title;
@@ -228,16 +223,63 @@ void MediaStreamDeckPlugin::CheckMedia() {
 
 					if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
 						currentTitle = title;
+						currentSession = session;
 						break;
 					}
 				}
-
 			}
 		}
 
-		mTitleMutex.lock();
+		mButtonDataMutex.lock();
+
+		if (!currentTitle.empty()) {
+			// We need to try drawing whenever we have a title. I'm seeing two MediaPropertiesChangedEvents. The first one covers the title and what not,
+			// the second one is the thumbnail. I don't want to have to rely on that always being the case, so I just fetch the thumbnail every time
+			// and it all ends up correct.
+			auto properties = currentSession.TryGetMediaPropertiesAsync().get();
+
+			if (properties != nullptr) {
+				auto thumbnail = properties.Thumbnail();
+
+				if (thumbnail != nullptr) {
+					// The decoder is auto-configuring so it'll read the input data (which has always been PNG so far)
+					// but it needs to be encoded as a base64-encoded string of PNG data.
+					auto stream = thumbnail.OpenReadAsync().get();
+					auto decoder = BitmapDecoder::CreateAsync(stream).get();
+
+					// Scale the image down to 72x72 for the button by applying the transform here and requesting 72x72 on the encoder.
+					BitmapTransform transform;
+					transform.ScaledHeight(72);
+					transform.ScaledWidth(72);
+					auto pixels = decoder.GetPixelDataAsync(BitmapPixelFormat::Bgra8, BitmapAlphaMode::Straight, transform, ExifOrientationMode::RespectExifOrientation, ColorManagementMode::ColorManageToSRgb).get();
+					InMemoryRandomAccessStream outStream;
+					auto encoder = BitmapEncoder::CreateAsync(BitmapEncoder::PngEncoderId(), outStream).get();
+					auto dpiX = decoder.DpiX();
+					auto dpiY = decoder.DpiY();
+					auto pixelData = pixels.DetachPixelData();
+					encoder.SetPixelData(decoder.BitmapPixelFormat(), BitmapAlphaMode::Ignore, 72, 72, dpiX, dpiY, pixelData);
+					encoder.FlushAsync().get();
+
+					// At this point outStream has the PNG-encoded data. We reset the stream for reading, create a buffer to hold the data
+					// and read into the buffer.
+					outStream.Seek(0);
+					auto size = static_cast<uint32_t>(outStream.Size());
+					auto buffer = Buffer(size);
+					outStream.ReadAsync(buffer, size, InputStreamOptions::None).get();
+
+					// Finally we generate the base64-encoded string, UTF8Encode that to convert from wstring to string and we're done!
+					auto encoded = CryptographicBuffer::EncodeToBase64String(buffer);
+					mImage = UTF8Encode(encoded.c_str());
+					Log("Set background image for " + UTF8Encode(currentTitle) + " size: " + std::to_string(outStream.Size()) + " encoded length: " + std::to_string(mImage.size()));
+				}
+			}
+		}
+		else {
+			mImage = "";
+		}
+
 		mTitle = currentTitle;
-		mTitleMutex.unlock();
+		mButtonDataMutex.unlock();
 	}
 }
 
@@ -305,6 +347,8 @@ void MediaStreamDeckPlugin::ReceiveSettings(const std::string& inAction, const s
 	if (refresh_time == 0) {
 		refresh_time = 250;
 	}
+	// We set an empty title now so we can get the response for the font size so we have it when we need it.
+	mConnectionManager->SetTitle("", inContext, kESDSDKTarget_HardwareAndSoftware);
 
 	// This resets the display timer for the settings for this view.
 	StartRefreshTimer(refresh_time, inContext);
@@ -334,6 +378,17 @@ void MediaStreamDeckPlugin::StartRefreshTimer(int period, const std::string& con
 
 }
 
+void MediaStreamDeckPlugin::TitleParametersDidChange(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)
+{
+	// We use this event to fish out the title text size and adjust mTextWidth based on it.
+	json params;
+	EPLJSONUtils::GetObjectByName(inPayload, "titleParameters", params);
+	auto font_size = EPLJSONUtils::GetIntByName(params, "fontSize");
+	mButtonDataMutex.lock();
+	mTextWidth = 72 / (font_size/2); // This seems to work?
+	mButtonDataMutex.unlock();
+
+}
 void MediaStreamDeckPlugin::KeyDownForAction(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)
 {
 	// Nothing to do
@@ -358,3 +413,4 @@ void MediaStreamDeckPlugin::SendToPlugin(const std::string& inAction, const std:
 {
 	// Nothing to do
 }
+
