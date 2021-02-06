@@ -17,6 +17,7 @@
 #include "Common/ESDConnectionManager.h"
 #include "Common/EPLJSONUtils.h"
 
+#include <winrt/Windows.Storage.Streams.h>
 
 class CallBackTimer
 {
@@ -71,21 +72,29 @@ MediaStreamDeckPlugin::MediaStreamDeckPlugin()
 {
 	// TODO: Configurable elements: mTextWidth should be configurable
 	mTextWidth = 6;
-	auto async = GlobalSystemMediaTransportControlsSessionManager::RequestAsync();
-	mMgr = async.get();
-	async.Close();
+	mMgr = GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
 
 	mMgr.CurrentSessionChanged([this](GlobalSystemMediaTransportControlsSessionManager const& sender, CurrentSessionChangedEventArgs const& args) {
 		if (this != nullptr && this->mConnectionManager != nullptr) {
 			Log("Current Session Changed detected");
 			LogSessions();
-			sender.GetCurrentSession().MediaPropertiesChanged({ this, &MediaStreamDeckPlugin::MediaChangedHandler });
-			sender.GetCurrentSession().PlaybackInfoChanged({ this, &MediaStreamDeckPlugin::PlaybackChangedHandler });
+			auto currentSession = sender.GetCurrentSession();
+			if (currentSession != nullptr) {
+				currentSession.MediaPropertiesChanged({ this, &MediaStreamDeckPlugin::MediaChangedHandler });
+				currentSession.PlaybackInfoChanged({ this, &MediaStreamDeckPlugin::PlaybackChangedHandler });
+			}
+
 		}
 	});
 
-	mMgr.GetCurrentSession().MediaPropertiesChanged({ this, &MediaStreamDeckPlugin::MediaChangedHandler });
-	mMgr.GetCurrentSession().PlaybackInfoChanged({ this, &MediaStreamDeckPlugin::PlaybackChangedHandler });
+	// Perform initial setup. If there's no active session now, our first hooks will be registered by the event handler
+	// above.
+	auto currentSession = mMgr.GetCurrentSession();
+	if (currentSession != nullptr) {
+		currentSession.MediaPropertiesChanged({ this, &MediaStreamDeckPlugin::MediaChangedHandler });
+		currentSession.PlaybackInfoChanged({ this, &MediaStreamDeckPlugin::PlaybackChangedHandler });
+	}
+	// If there's no session, we can't log that fact since we don't have a logger yet.
 }
 
 MediaStreamDeckPlugin::~MediaStreamDeckPlugin()
@@ -138,10 +147,8 @@ int MediaStreamDeckPlugin::RefreshTimer(int tick, const std::string& context)
 
 		// Make a local copy of the title
 		mTitleMutex.lock();
-		winrt::hstring localTitle(mTitle);
+		std::wstring wtitle(mTitle);
 		mTitleMutex.unlock();
-
-		std::wstring wtitle(localTitle);
 
 		// Only draw the title if set (i.e. media is actually playing)
 		if (wtitle.length() > 0) {
@@ -178,51 +185,58 @@ int MediaStreamDeckPlugin::RefreshTimer(int tick, const std::string& context)
 void MediaStreamDeckPlugin::CheckMedia() {
 	if (mConnectionManager != nullptr)
 	{
-		mTitleMutex.lock();
+		LogSessions();
 
-		auto session = mMgr.GetCurrentSession();
-		auto async = session.TryGetMediaPropertiesAsync();
-		auto properties = async.get();
-		auto title = properties.Title();
-		auto status = session.GetPlaybackInfo().PlaybackStatus();
+		std::wstring currentTitle;
+		auto currentSession = mMgr.GetCurrentSession();
 
-		if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
-			if (title != mTitle) {
-				mTitle = title;
-			}
-		}
-		else {
+		if (currentSession != nullptr) {
+			auto properties = currentSession.TryGetMediaPropertiesAsync().get();
 
-			// If the current session isn't playing, let's see if they have something playing somewhere else. This isn't perfect because
-			// Chrome does peculiar things with its sessions, but it's something. If you're listening to multiple things simultaneously,
-			// Windows is going to get confused too.
-
-			auto isPlaying = false;
-			auto sessions = mMgr.GetSessions();
-
-			for (unsigned int i = 0; i < sessions.Size(); i++) {
-				auto session = sessions.GetAt(i);
-				auto tlProps = session.GetTimelineProperties();
-				auto async = session.TryGetMediaPropertiesAsync();
-				auto properties = async.get();
-				auto thumbnail = properties.Thumbnail();
+			if (properties != nullptr) {
 				auto title = properties.Title();
-				auto status = session.GetPlaybackInfo().PlaybackStatus();
+				auto status = currentSession.GetPlaybackInfo().PlaybackStatus();
+				auto thumbnail = properties.Thumbnail();
+
+				if (thumbnail != nullptr) {
+
+					auto t_async = thumbnail.OpenReadAsync();
+					auto result = t_async.get();
+					Log("ContentType: " + UTF8Encode(result.ContentType().c_str()));
+				}
+				else {
+					Log("NO THUMBNAIL");
+				}
 
 				if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
-					if (title != mTitle) {
-						mTitle = title;
-					}
-					isPlaying = true;
-					break;
+					currentTitle = title;
 				}
-			}
-
-			if (!isPlaying) {
-				mTitle = winrt::to_hstring("");
 			}
 		}
 
+		// If the current session isn't playing, let's see if they have something playing somewhere else. This isn't perfect because
+		// Chrome does peculiar things with its sessions, but it's something. If you're listening to multiple things simultaneously,
+		// Windows is going to get confused too.
+		if (currentTitle.empty()) {
+			auto sessions = mMgr.GetSessions();
+
+			for (const auto &session: sessions) {
+				auto properties = session.TryGetMediaPropertiesAsync().get();
+				if (properties != nullptr) {
+					auto title = properties.Title();
+					auto status = session.GetPlaybackInfo().PlaybackStatus();
+
+					if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
+						currentTitle = title;
+						break;
+					}
+				}
+
+			}
+		}
+
+		mTitleMutex.lock();
+		mTitle = currentTitle;
 		mTitleMutex.unlock();
 	}
 }
@@ -232,8 +246,14 @@ void MediaStreamDeckPlugin::LogSessions()
 #if DEBUG
 	auto sessions = mMgr.GetSessions();
 
-	for (unsigned int i = 0; i < sessions.Size(); i++) {
-		auto session = sessions.GetAt(i);
+	if (sessions.Size() == 0) {
+		Log("No Sessions");
+		return;
+	}
+
+	auto i = 0;
+	for (const auto& session : sessions) {
+		++i;
 		auto tlProps = session.GetTimelineProperties();
 		auto async = session.TryGetMediaPropertiesAsync();
 		auto properties = async.get();
@@ -266,8 +286,12 @@ void MediaStreamDeckPlugin::WillDisappearForAction(const std::string& inAction, 
 	Log("WillDisappearForAction: " + inAction + " payload: " + inPayload.dump());
 	// Remove the context and its associated timer
 	mContextTimersMutex.lock();
-	delete mContextTimers[inContext];
-	mContextTimers.erase(inContext);
+
+	if (mContextTimers.find(inContext) != mContextTimers.end()) {
+		delete mContextTimers[inContext];
+		mContextTimers.erase(inContext);
+	}
+
 	mContextTimersMutex.unlock();
 }
 
@@ -282,22 +306,32 @@ void MediaStreamDeckPlugin::ReceiveSettings(const std::string& inAction, const s
 		refresh_time = 250;
 	}
 
-	mContextTimersMutex.lock();
 	// This resets the display timer for the settings for this view.
 	StartRefreshTimer(refresh_time, inContext);
-	mContextTimersMutex.unlock();
 	CheckMedia();
 }
 
 void MediaStreamDeckPlugin::StartRefreshTimer(int period, const std::string& context)
 {
-	auto timer = new CallBackTimer();
+	mContextTimersMutex.lock();
+
+	auto existing = mContextTimers.find(context);
+
+	CallBackTimer* timer = nullptr;
+	if (existing != mContextTimers.end()) {
+		timer = existing->second;
+	}
+	else {
+		timer = new CallBackTimer();
+	}
 	mContextTimers[context] = timer;
+	mContextTimersMutex.unlock();
 
 	timer->start(period, [this, context, timer](int tick)
 	{
 		return this->RefreshTimer(tick, context);
 	});
+
 }
 
 void MediaStreamDeckPlugin::KeyDownForAction(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)

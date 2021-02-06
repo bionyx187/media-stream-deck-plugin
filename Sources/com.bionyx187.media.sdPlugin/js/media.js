@@ -66,13 +66,8 @@
 	    console.log("applySettings");
             var settings = jsonObj.payload.settings;
 	    console.log("settings: " + JSON.stringify(settings));
-		var checkTime = document.getElementById("check_time");
 		var refreshTime = document.getElementById("refresh_time");
 
-            if (settings.hasOwnProperty("check_time"))
-            {
-                checkTime.value = settings.check_time;
-            }
             if (settings.hasOwnProperty("refresh_time"))
             {
                 refreshTime.value = settings.refresh_time;
@@ -99,14 +94,12 @@
             if (websocket)
             {
 		console.log("have websocket");
-		var checkTime = document.getElementById("check_time");
 		var refreshTime = document.getElementById("refresh_time");
                 const json = 
                 {
                     "event": "setSettings",
                     "context": uuid,
                     "payload":{
-                        "check_time" : parseInt(checkTime.value, 10),
                         "refresh_time" : parseInt(refreshTime.value, 10),
                     }
                 };

@@ -57,7 +57,7 @@ private:
 	std::map<std::string, CallBackTimer*> mContextTimers;
 	std::mutex mContextTimersMutex;
 
-	winrt::hstring mTitle;
+	std::wstring mTitle;
 	std::mutex mTitleMutex;
 
 	int mTextWidth;
