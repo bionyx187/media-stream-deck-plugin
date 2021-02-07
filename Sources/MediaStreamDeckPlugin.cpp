@@ -25,12 +25,12 @@ using namespace Windows::Graphics::Imaging;
 using namespace Windows::Storage::Streams;
 using namespace Windows::Security::Cryptography;
 
-class CallBackTimer
+class ButtonHandler
 {
 public:
-    CallBackTimer() :_execute(false) { }
+    ButtonHandler() :_execute(false), textWidth(0) { }
 
-    ~CallBackTimer()
+    ~ButtonHandler()
     {
         if( _execute.load(std::memory_order_acquire) )
         {
@@ -45,6 +45,26 @@ public:
             _thd.join();
     }
 
+	void set_refresh(bool refresh) {
+		std::lock_guard<std::mutex> lock(mutex);
+		doRefresh = refresh;
+	}
+
+	void set_text_width(int newWidth) {
+		std::lock_guard<std::mutex> lock(mutex);
+		textWidth = newWidth;
+	}
+
+	bool refresh() {
+		std::lock_guard<std::mutex> lock(mutex);
+		return doRefresh;
+	}
+
+	int text_width() {
+		std::lock_guard<std::mutex> lock(mutex);
+		return textWidth;
+	}
+
     void start(int interval, std::function<int(int)> func)
     {
         if(_execute.load(std::memory_order_acquire))
@@ -57,7 +77,19 @@ public:
             while (_execute.load(std::memory_order_acquire))
             {
                 currentTick = func(currentTick);
-                std::this_thread::sleep_for(std::chrono::milliseconds(interval));
+				if (currentTick > 0) {
+					set_refresh(false);
+				}
+
+				if (refresh()) {
+					// We haven't done the initial draw. We don't want to sleep long waiting to get unblocked,
+					// so we sleep a fixed amount of time here to limit UI latency. If they have a slow scroll,
+					// this avoids a slow initial draw.
+					std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				}
+				else {
+					std::this_thread::sleep_for(std::chrono::milliseconds(interval));
+				}
             }
         });
     }
@@ -72,9 +104,14 @@ public:
 private:
     std::atomic<bool> _execute;
     std::thread _thd;
+
+
+	bool doRefresh;
+	int textWidth;
+	std::mutex mutex;
 };
 
-MediaStreamDeckPlugin::MediaStreamDeckPlugin() : mTextWidth(12)
+MediaStreamDeckPlugin::MediaStreamDeckPlugin()
 {
 	mMgr = GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
 
@@ -99,13 +136,16 @@ MediaStreamDeckPlugin::MediaStreamDeckPlugin() : mTextWidth(12)
 		currentSession.PlaybackInfoChanged({ this, &MediaStreamDeckPlugin::PlaybackChangedHandler });
 	}
 	// If there's no session, we can't log that fact since we don't have a logger yet.
+
+	CheckMedia();
 }
 
 MediaStreamDeckPlugin::~MediaStreamDeckPlugin()
 {
-	for (const auto& [key, value] : mContextTimers) {
-		value->stop();
-		delete value;
+	for (const auto& [_, value] : mContextHandlers) {
+		if (value != nullptr) {
+			delete value;
+		}
 	}
 }
 
@@ -140,47 +180,47 @@ void MediaStreamDeckPlugin::PlaybackChangedHandler(GlobalSystemMediaTransportCon
 	}
 }
 
-int MediaStreamDeckPlugin::RefreshTimer(int tick, const std::string& context)
+int MediaStreamDeckPlugin::RefreshTimer(int tick, const std::string& context, bool refresh, int textWidth)
 {
 	//
-	// This is running in an independent thread.
+	// This is running in an independent thread. The object calling this is initialized in multiple steps.
+	// The test below is verifying that all the invariants are established.
 	//
-	if(mConnectionManager != nullptr)
+	if(mConnectionManager != nullptr && textWidth != 0)
 	{
 		std::string text;
+		std::wstring wtitle;
 
-		// Make a local copy of the title
-		mButtonDataMutex.lock();
-		std::wstring wtitle(mTitle);
-		auto width = mTextWidth;
-		mButtonDataMutex.unlock();
+		// Read the global media data
+		{
+			std::lock_guard<std::mutex> lock(mButtonDataMutex);
+			if (refresh) {
+				Log("Context " + context + " doing refresh");
+				mConnectionManager->SetImage(mImage, context, kESDSDKTarget_HardwareAndSoftware);
+			}
+			wtitle = mTitle;
+		}
 
 		// Only draw the title if set (i.e. media is actually playing)
 		if (wtitle.length() > 0) {
 			// Pad the string for scrolling.
-			wtitle.insert(0, width, ' ');
-			wtitle.append(width, ' ');
+			wtitle.insert(0, textWidth, ' ');
+			wtitle.append(textWidth, ' ');
 
 
-			if (tick > (wtitle.length() - width)) {
+			if (tick > (wtitle.length() - textWidth)) {
 				tick = 0;
 			}
 
-			auto substring = wtitle.substr(tick, width);
+			auto substring = wtitle.substr(tick, textWidth);
 			text = UTF8Encode(substring);
 		}
 
+		// Apply the scrolling version of the title text
+		mConnectionManager->SetTitle(text, context, kESDSDKTarget_HardwareAndSoftware);
 
-		// Make sure this is still a valid context by looking for our entry in the timer map. If it's not there, the button got deactivated
-		// and we shouldn't draw.
-		mContextTimersMutex.lock();
-		if (mContextTimers.find(context) != mContextTimers.end()) {
-			mConnectionManager->SetImage(mImage, context, kESDSDKTarget_HardwareAndSoftware);
-			mConnectionManager->SetTitle(text, context, kESDSDKTarget_HardwareAndSoftware);
-		}
-		mContextTimersMutex.unlock();
-
-
+		// Only update our animation count if we actually drew something. This ensures
+		// that we stay 
 		if (text.size() > 0) {
 			return ++tick;
 		}
@@ -188,38 +228,48 @@ int MediaStreamDeckPlugin::RefreshTimer(int tick, const std::string& context)
 	return 0;
 }
 
+
+// CheckMedia is called at initial plugin startup to sample the media state
+// and then called in event handlers to sample media changes.
+// Nothing in CheckMedia should depend on the plugin infra running. Calling Log and friends
+// is OK, but this shouldn't assume the connection manager is up, since it's being called
+// at object construction.
 void MediaStreamDeckPlugin::CheckMedia() {
-	if (mConnectionManager != nullptr)
-	{
-		LogSessions();
+	LogSessions();
 
-		std::wstring currentTitle;
-		auto currentSession = mMgr.GetCurrentSession();
+	std::wstring currentTitle;
 
-		if (currentSession != nullptr) {
-			auto properties = currentSession.TryGetMediaPropertiesAsync().get();
+	// Get the current session. There may not be one at startup or we just happen to catch them switching apps.
+	auto currentSession = mMgr.GetCurrentSession();
+	if (currentSession != nullptr) {
+		auto properties = currentSession.TryGetMediaPropertiesAsync().get();
 
-			if (properties != nullptr) {
-				auto title = properties.Title();
-				auto status = currentSession.GetPlaybackInfo().PlaybackStatus();
+		if (properties != nullptr) {
+			auto title = properties.Title();
+			auto info = currentSession.GetPlaybackInfo();
+			if (info != nullptr) {
+				auto status = info.PlaybackStatus();
 
 				if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
 					currentTitle = title;
 				}
 			}
 		}
+	}
 
-		// If the current session isn't playing, let's see if they have something playing somewhere else. This isn't perfect because
-		// Chrome does peculiar things with its sessions, but it's something. If you're listening to multiple things simultaneously,
-		// Windows is going to get confused too.
-		if (currentTitle.empty()) {
-			auto sessions = mMgr.GetSessions();
+	// If the current session isn't playing (or doesn't exist), let's see if they have something playing somewhere else. 
+	// This isn't perfect because Chrome will hide multiple playing videos behind a single session and only report
+	// focused tabs, so we may not get anything if that playing tab isn't active.
+	if (currentTitle.empty()) {
+		auto sessions = mMgr.GetSessions();
 
-			for (const auto &session: sessions) {
-				auto properties = session.TryGetMediaPropertiesAsync().get();
-				if (properties != nullptr) {
-					auto title = properties.Title();
-					auto status = session.GetPlaybackInfo().PlaybackStatus();
+		for (const auto &session: sessions) {
+			auto properties = session.TryGetMediaPropertiesAsync().get();
+			if (properties != nullptr) {
+				auto title = properties.Title();
+				auto info = session.GetPlaybackInfo();
+				if (info != nullptr) {
+					auto status = info.PlaybackStatus();
 
 					if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
 						currentTitle = title;
@@ -229,57 +279,70 @@ void MediaStreamDeckPlugin::CheckMedia() {
 				}
 			}
 		}
+	}
 
-		mButtonDataMutex.lock();
+	std::string currentImage;
 
-		if (!currentTitle.empty()) {
-			// We need to try drawing whenever we have a title. I'm seeing two MediaPropertiesChangedEvents. The first one covers the title and what not,
-			// the second one is the thumbnail. I don't want to have to rely on that always being the case, so I just fetch the thumbnail every time
-			// and it all ends up correct.
-			auto properties = currentSession.TryGetMediaPropertiesAsync().get();
+	if (!currentTitle.empty()) {
+		// We need to try drawing whenever we have a title. I'm seeing two MediaPropertiesChangedEvents. The first one covers the title and what not,
+		// the second one is the thumbnail. I don't want to have to rely on that always being the case, so I just fetch the thumbnail every time
+		// and it all ends up eventually correct.
+		auto properties = currentSession.TryGetMediaPropertiesAsync().get();
 
-			if (properties != nullptr) {
-				auto thumbnail = properties.Thumbnail();
+		if (properties != nullptr) {
+			auto thumbnail = properties.Thumbnail();
 
-				if (thumbnail != nullptr) {
-					// The decoder is auto-configuring so it'll read the input data (which has always been PNG so far)
-					// but it needs to be encoded as a base64-encoded string of PNG data.
-					auto stream = thumbnail.OpenReadAsync().get();
-					auto decoder = BitmapDecoder::CreateAsync(stream).get();
+			if (thumbnail != nullptr) {
+				// The decoder is auto-configuring so it'll read the input data (which has always been PNG so far)
+				// but it needs to be encoded as a base64-encoded string of PNG data.
+				auto stream = thumbnail.OpenReadAsync().get();
+				auto decoder = BitmapDecoder::CreateAsync(stream).get();
 
-					// Scale the image down to 72x72 for the button by applying the transform here and requesting 72x72 on the encoder.
-					BitmapTransform transform;
-					transform.ScaledHeight(72);
-					transform.ScaledWidth(72);
-					auto pixels = decoder.GetPixelDataAsync(BitmapPixelFormat::Bgra8, BitmapAlphaMode::Straight, transform, ExifOrientationMode::RespectExifOrientation, ColorManagementMode::ColorManageToSRgb).get();
-					InMemoryRandomAccessStream outStream;
-					auto encoder = BitmapEncoder::CreateAsync(BitmapEncoder::PngEncoderId(), outStream).get();
-					auto dpiX = decoder.DpiX();
-					auto dpiY = decoder.DpiY();
-					auto pixelData = pixels.DetachPixelData();
-					encoder.SetPixelData(decoder.BitmapPixelFormat(), BitmapAlphaMode::Ignore, 72, 72, dpiX, dpiY, pixelData);
-					encoder.FlushAsync().get();
+				// Scale the image down to 72x72 for the button by applying the transform here and requesting 72x72 on the encoder.
+				BitmapTransform transform;
+				transform.ScaledHeight(72);
+				transform.ScaledWidth(72);
+				auto pixels = decoder.GetPixelDataAsync(BitmapPixelFormat::Bgra8, BitmapAlphaMode::Straight, transform, ExifOrientationMode::RespectExifOrientation, ColorManagementMode::ColorManageToSRgb).get();
+				InMemoryRandomAccessStream outStream;
+				auto encoder = BitmapEncoder::CreateAsync(BitmapEncoder::PngEncoderId(), outStream).get();
+				auto dpiX = decoder.DpiX();
+				auto dpiY = decoder.DpiY();
+				auto pixelData = pixels.DetachPixelData();
+				encoder.SetPixelData(decoder.BitmapPixelFormat(), BitmapAlphaMode::Ignore, 72, 72, dpiX, dpiY, pixelData);
+				encoder.FlushAsync().get();
 
-					// At this point outStream has the PNG-encoded data. We reset the stream for reading, create a buffer to hold the data
-					// and read into the buffer.
-					outStream.Seek(0);
-					auto size = static_cast<uint32_t>(outStream.Size());
-					auto buffer = Buffer(size);
-					outStream.ReadAsync(buffer, size, InputStreamOptions::None).get();
+				// At this point outStream has the PNG-encoded data. We reset the stream for reading, create a buffer to hold the data
+				// and read into the buffer.
+				outStream.Seek(0);
+				auto size = static_cast<uint32_t>(outStream.Size());
+				auto buffer = Buffer(size);
+				outStream.ReadAsync(buffer, size, InputStreamOptions::None).get();
 
-					// Finally we generate the base64-encoded string, UTF8Encode that to convert from wstring to string and we're done!
-					auto encoded = CryptographicBuffer::EncodeToBase64String(buffer);
-					mImage = UTF8Encode(encoded.c_str());
-					Log("Set background image for " + UTF8Encode(currentTitle) + " size: " + std::to_string(outStream.Size()) + " encoded length: " + std::to_string(mImage.size()));
-				}
+				// Finally we generate the base64-encoded string, UTF8Encode that to convert from wstring to string and we're done!
+				auto encoded = CryptographicBuffer::EncodeToBase64String(buffer);
+				currentImage = UTF8Encode(encoded.c_str());
+				Log("Fetched background image for " + UTF8Encode(currentTitle) + " size: " + std::to_string(outStream.Size()) + " encoded length: " + std::to_string(currentImage.size()));
 			}
 		}
-		else {
-			mImage = "";
-		}
+	}
 
+	// Update the variables to indicate the current title and thumbnail
+	{
+		std::lock_guard<std::mutex> lock(mButtonDataMutex);
+		mImage = currentImage;
 		mTitle = currentTitle;
-		mButtonDataMutex.unlock();
+	}
+
+	// Tell all buttons we have new data and go get it!
+	RefreshAllHandlers();
+}
+
+void MediaStreamDeckPlugin::RefreshAllHandlers()
+{
+	std::lock_guard<std::mutex> lock(mContextHandlersMutex);
+	for (const auto& [context, handler] : mContextHandlers) {
+		Log("Set broadcast refresh for context " + context);
+		handler->set_refresh(true);
 	}
 }
 
@@ -296,14 +359,18 @@ void MediaStreamDeckPlugin::LogSessions()
 	auto i = 0;
 	for (const auto& session : sessions) {
 		++i;
-		auto tlProps = session.GetTimelineProperties();
-		auto async = session.TryGetMediaPropertiesAsync();
-		auto properties = async.get();
-		auto thumbnail = properties.Thumbnail();
-		auto title = properties.Title();
-		auto status = session.GetPlaybackInfo().PlaybackStatus();
-
-		Log("Session #" + std::to_string(i) + " (" + std::to_string(static_cast<int>(status)) + ") " + winrt::to_string(title));
+		auto properties = session.TryGetMediaPropertiesAsync().get();
+		auto message = "Session #" + std::to_string(i) + " ";
+		if (properties != nullptr) {
+			auto title = properties.Title();
+			message += winrt::to_string(title);
+			auto info = session.GetPlaybackInfo();
+			if (info != nullptr) {
+				auto status = info.PlaybackStatus();
+				message += " (" + std::to_string(static_cast<int>(status)) + ")";
+			}
+		}
+		Log(message);
 	}
 #endif
 }
@@ -320,6 +387,8 @@ void MediaStreamDeckPlugin::Log(const std::string& message)
 void MediaStreamDeckPlugin::WillAppearForAction(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID)
 {
 	Log("WillAppearForAction: " + inAction + " context: " + inContext + " payload: " + inPayload.dump());
+	// Since ReceiveSettings is called when a button is reconfigured, and receives the same payload, just delegate to that function
+	// to configure the button.
 	ReceiveSettings(inAction, inContext, inPayload, inDeviceID);
 }
 
@@ -327,14 +396,20 @@ void MediaStreamDeckPlugin::WillDisappearForAction(const std::string& inAction, 
 {
 	Log("WillDisappearForAction: " + inAction + " payload: " + inPayload.dump());
 	// Remove the context and its associated timer
-	mContextTimersMutex.lock();
 
-	if (mContextTimers.find(inContext) != mContextTimers.end()) {
-		delete mContextTimers[inContext];
-		mContextTimers.erase(inContext);
+	// Since the worker thread acquires the lock to figure out if it's getting removed, we acquire the lock
+	// to remove its entry, then delete the object so it can run to completion and properly terminate.
+	// Holding the lock for too long here results in deadlock.
+	auto target = mContextHandlers.find(inContext);
+	if (target != mContextHandlers.end()) {
+		auto timer = target->second;
+		{
+			std::lock_guard<std::mutex> lock(mContextHandlersMutex);
+			mContextHandlers.erase(inContext);
+		}
+
+		delete timer;
 	}
-
-	mContextTimersMutex.unlock();
 }
 
 void MediaStreamDeckPlugin::ReceiveSettings(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)
@@ -347,47 +422,46 @@ void MediaStreamDeckPlugin::ReceiveSettings(const std::string& inAction, const s
 	if (refresh_time == 0) {
 		refresh_time = 250;
 	}
-	// We set an empty title now so we can get the response for the font size so we have it when we need it.
+	// We set an empty title now so we can get the response containing the font size so we configure font spacing.
 	mConnectionManager->SetTitle("", inContext, kESDSDKTarget_HardwareAndSoftware);
 
 	// This resets the display timer for the settings for this view.
 	StartRefreshTimer(refresh_time, inContext);
-	CheckMedia();
 }
 
 void MediaStreamDeckPlugin::StartRefreshTimer(int period, const std::string& context)
 {
-	mContextTimersMutex.lock();
+	std::lock_guard<std::mutex> lock(mContextHandlersMutex);
 
-	auto existing = mContextTimers.find(context);
-
-	CallBackTimer* timer = nullptr;
-	if (existing != mContextTimers.end()) {
-		timer = existing->second;
+	// Reuse existing handlers if possible
+	auto handler = mContextHandlers[context];
+	if (handler == nullptr) {
+		handler = new ButtonHandler();
+		mContextHandlers[context] = handler;
 	}
-	else {
-		timer = new CallBackTimer();
-	}
-	mContextTimers[context] = timer;
-	mContextTimersMutex.unlock();
 
-	timer->start(period, [this, context, timer](int tick)
+	handler->set_refresh(true);
+	handler->start(period, [this, context, handler](int tick)
 	{
-		return this->RefreshTimer(tick, context);
+		return this->RefreshTimer(tick, context, handler->refresh(), handler->text_width());
 	});
-
 }
 
 void MediaStreamDeckPlugin::TitleParametersDidChange(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)
 {
-	// We use this event to fish out the title text size and adjust mTextWidth based on it.
+	// We use this event to fish out the title text size and adjust the handler's text width based on it.
+	Log("TitleParametersDidChange: " + inAction + " context: " + inContext + " payload: " + inPayload.dump());
 	json params;
 	EPLJSONUtils::GetObjectByName(inPayload, "titleParameters", params);
 	auto font_size = EPLJSONUtils::GetIntByName(params, "fontSize");
-	mButtonDataMutex.lock();
-	mTextWidth = 72 / (font_size/2); // This seems to work?
-	mButtonDataMutex.unlock();
 
+	// Although this should exist, if the user went through profiles really quickly, we could get the deletion message
+	// before the font response, so we don't want to crash in that case.
+	std::lock_guard<std::mutex> lock(mContextHandlersMutex);
+	auto existing = mContextHandlers.find(inContext);
+	if (existing != mContextHandlers.end()) {
+		existing->second->set_text_width(72 / (font_size / 2));
+	}
 }
 void MediaStreamDeckPlugin::KeyDownForAction(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)
 {

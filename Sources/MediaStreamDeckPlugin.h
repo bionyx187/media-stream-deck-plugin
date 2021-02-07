@@ -22,7 +22,7 @@
 using namespace winrt;
 using namespace Windows::Media::Control;
 
-class CallBackTimer;
+class ButtonHandler;
 
 class MediaStreamDeckPlugin : public ESDBasePlugin
 {
@@ -45,8 +45,11 @@ public:
 	void TitleParametersDidChange(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID) override;
 private:
 	void StartRefreshTimer(int period, const std::string& context);
-	int RefreshTimer(int tick, const std::string& context);
+	int RefreshTimer(int tick, const std::string& context, bool refresh, int textWidth);
 	void CheckMedia();
+
+	void RefreshAllHandlers();
+
 	void LogSessions();
 	void Log(const std::string& message);
 	void MediaChangedHandler(GlobalSystemMediaTransportControlsSession const& sender, MediaPropertiesChangedEventArgs  const& args);
@@ -54,13 +57,12 @@ private:
 
 	std::string UTF8Encode(const std::wstring& wstr);
 
-	std::map<std::string, CallBackTimer*> mContextTimers;
-	std::mutex mContextTimersMutex;
+	std::map<std::string, ButtonHandler*> mContextHandlers;
+	std::mutex mContextHandlersMutex; // protects mContextHandlers
 
 	std::wstring mTitle;
 	std::string mImage;
-	int mTextWidth;
-	std::mutex mButtonDataMutex; // protects mTitle, mImage, mTextWidth
+	std::mutex mButtonDataMutex; // protects mTitle, mImage
 
 	IGlobalSystemMediaTransportControlsSessionManager mMgr{ nullptr };
 };
