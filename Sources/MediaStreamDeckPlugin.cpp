@@ -78,20 +78,20 @@ public:
         {
             while (_execute.load(std::memory_order_acquire))
             {
+				// Refresh requires we reset the animation or we'll
+				// draw new text into an existing scroll.
+				if (refresh()) {
+					currentTick = 0;
+				}
                 currentTick = func(currentTick);
+
+				// If we actually drew something, mark the refresh as done,
+				// otherwise it stays set until a draw happens.
 				if (currentTick > 0) {
 					set_refresh(false);
 				}
 
-				if (refresh()) {
-					// We haven't done the initial draw. We don't want to sleep long waiting to get unblocked,
-					// so we sleep a fixed amount of time here to limit UI latency. If they have a slow scroll,
-					// this avoids a slow initial draw.
-					std::this_thread::sleep_for(std::chrono::milliseconds(10));
-				}
-				else {
-					std::this_thread::sleep_for(std::chrono::milliseconds(interval));
-				}
+				std::this_thread::sleep_for(std::chrono::milliseconds(interval));
             }
         });
     }
@@ -120,7 +120,7 @@ MediaStreamDeckPlugin::MediaStreamDeckPlugin()
 
 	mMgr.SessionsChanged([this](GlobalSystemMediaTransportControlsSessionManager const& sender, SessionsChangedEventArgs const& args) {
 		if (this != nullptr) {
-			Log("Sessions Changed detected");
+			LogEvent("Sessions Changed detected");
 			// If the sessions have changed, just cancel all our existing handlers and register new ones. This is infrequent
 			// and simplifies keeping everything in sync.
 
@@ -136,7 +136,7 @@ MediaStreamDeckPlugin::MediaStreamDeckPlugin()
 					mSessionHandlers.erase(session_handler);
 				}
 
-				Log("Added handler for " + key);
+				LogEvent("Added handler for " + key);
 				auto media_revoker = session.MediaPropertiesChanged(winrt::auto_revoke, { this, &MediaStreamDeckPlugin::MediaChangedHandler });
 				auto properties_revoker = session.PlaybackInfoChanged(winrt::auto_revoke, { this, &MediaStreamDeckPlugin::PlaybackChangedHandler });
 				auto handlers = std::make_tuple(std::move(media_revoker), std::move(properties_revoker));
@@ -182,7 +182,6 @@ void MediaStreamDeckPlugin::MediaChangedHandler(GlobalSystemMediaTransportContro
 	// Since this are running in separate threads, it's possible the plugin could be destructed before they execute, so it must
 	// verify 'this' is valid.
 	if (this != nullptr) {
-		Log("MediaPropertiesChanged detected");
 		CheckMedia();
 	}
 }
@@ -192,7 +191,6 @@ void MediaStreamDeckPlugin::PlaybackChangedHandler(GlobalSystemMediaTransportCon
 	// Since this are running in separate threads, it's possible the plugin could be destructed before they execute, so it must
 	// verify 'this' is valid.
 	if (this != nullptr) {
-		Log("PlaybackInfoChanged detected");
 		CheckMedia();
 	}
 }
@@ -234,12 +232,7 @@ int MediaStreamDeckPlugin::HandleButton(int tick, const std::string& context, bo
 
 		// Apply the scrolling version of the title text
 		mConnectionManager->SetTitle(text, context, kESDSDKTarget_HardwareAndSoftware);
-
-		// Only update our animation count if we actually drew something. This ensures
-		// that we stay 
-		if (text.size() > 0) {
-			return ++tick;
-		}
+		return ++tick;
 	}
 	return 0;
 }
@@ -254,21 +247,21 @@ void MediaStreamDeckPlugin::CheckMedia() {
 	LogSessions();
 
 	std::wstring currentTitle;
+	GlobalSystemMediaTransportControlsSessionMediaProperties properties{ nullptr };
 
 	try {
 		// Get the current session. There may not be one at startup or we just happen to catch them switching apps.
 		auto currentSession = mMgr.GetCurrentSession();
 		if (currentSession != nullptr) {
-			auto properties = currentSession.TryGetMediaPropertiesAsync().get();
+			properties = currentSession.TryGetMediaPropertiesAsync().get();
 
 			if (properties != nullptr) {
-				auto title = properties.Title();
 				auto info = currentSession.GetPlaybackInfo();
 				if (info != nullptr) {
 					auto status = info.PlaybackStatus();
 
 					if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
-						currentTitle = title;
+						currentTitle = properties.Title();
 					}
 				}
 			}
@@ -281,15 +274,14 @@ void MediaStreamDeckPlugin::CheckMedia() {
 			auto sessions = mMgr.GetSessions();
 
 			for (const auto& session : sessions) {
-				auto properties = session.TryGetMediaPropertiesAsync().get();
+				properties = session.TryGetMediaPropertiesAsync().get();
 				if (properties != nullptr) {
-					auto title = properties.Title();
 					auto info = session.GetPlaybackInfo();
 					if (info != nullptr) {
 						auto status = info.PlaybackStatus();
 
 						if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
-							currentTitle = title;
+							currentTitle = properties.Title();
 							currentSession = session;
 							break;
 						}
@@ -304,8 +296,8 @@ void MediaStreamDeckPlugin::CheckMedia() {
 			// We need to try drawing whenever we have a title. I'm seeing two MediaPropertiesChangedEvents. The first one covers the title and what not,
 			// the second one is the thumbnail. I don't want to have to rely on that always being the case, so I just fetch the thumbnail every time
 			// and it all ends up eventually correct.
-			auto properties = currentSession.TryGetMediaPropertiesAsync().get();
 
+			// This should always be the case.
 			if (properties != nullptr) {
 				auto thumbnail = properties.Thumbnail();
 
@@ -338,7 +330,7 @@ void MediaStreamDeckPlugin::CheckMedia() {
 					// Finally we generate the base64-encoded string, UTF8Encode that to convert from wstring to string and we're done!
 					auto encoded = CryptographicBuffer::EncodeToBase64String(buffer);
 					currentImage = UTF8Encode(encoded.c_str());
-					Log("Fetched background image for " + UTF8Encode(currentTitle) + " size: " + std::to_string(outStream.Size()) + " encoded length: " + std::to_string(currentImage.size()));
+					LogEvent("Fetched background image for " + UTF8Encode(currentTitle) + " size: " + std::to_string(outStream.Size()) + " encoded length: " + std::to_string(currentImage.size()));
 				}
 			}
 		}
@@ -355,11 +347,11 @@ void MediaStreamDeckPlugin::CheckMedia() {
 
 	}
 	catch (winrt::hresult_error e) {
-		Log("WinRT exception " + UTF8Encode(e.message().c_str()));
+		LogException("WinRT exception " + UTF8Encode(e.message().c_str()));
 	}
 
 	catch (...) {
-		Log("CheckMedia recovered from exception");
+		LogException("CheckMedia recovered from exception");
 	}
 }
 
@@ -367,14 +359,13 @@ void MediaStreamDeckPlugin::RefreshAllHandlers()
 {
 	std::lock_guard<std::mutex> lock(mContextHandlersMutex);
 	for (const auto& [context, handler] : mContextHandlers) {
-		Log("Set broadcast refresh for context " + context);
 		handler->set_refresh(true);
 	}
 }
 
 void MediaStreamDeckPlugin::LogSessions()
 {
-#if DEBUG
+#if LOG_SESSIONS
 	try {
 		auto cur = mMgr.GetCurrentSession();
 		if (cur != nullptr) {
@@ -427,9 +418,23 @@ void MediaStreamDeckPlugin::Log(const std::string& message)
 #endif
 }
 
+void MediaStreamDeckPlugin::LogEvent(const std::string& message)
+{
+#if LOG_EVENTS
+	Log(message);
+#endif
+}
+
+void MediaStreamDeckPlugin::LogException(const std::string& message)
+{
+#if LOG_EXCEPTIONS
+	Log(message);
+#endif
+}
+
 void MediaStreamDeckPlugin::WillAppearForAction(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID)
 {
-	Log("WillAppearForAction: " + inAction + " context: " + inContext + " payload: " + inPayload.dump());
+	LogEvent("WillAppearForAction: " + inAction + " context: " + inContext + " payload: " + inPayload.dump());
 	// Since ReceiveSettings is called when a button is reconfigured, and receives the same payload, just delegate to that function
 	// to configure the button.
 	ReceiveSettings(inAction, inContext, inPayload, inDeviceID);
@@ -437,7 +442,7 @@ void MediaStreamDeckPlugin::WillAppearForAction(const std::string& inAction, con
 
 void MediaStreamDeckPlugin::WillDisappearForAction(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID)
 {
-	Log("WillDisappearForAction: " + inAction + " payload: " + inPayload.dump());
+	LogEvent("WillDisappearForAction: " + inAction + " payload: " + inPayload.dump());
 	// Remove the context and its associated timer
 
 	// Since the worker thread acquires the lock to figure out if it's getting removed, we acquire the lock
@@ -457,7 +462,7 @@ void MediaStreamDeckPlugin::WillDisappearForAction(const std::string& inAction, 
 
 void MediaStreamDeckPlugin::ReceiveSettings(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)
 {
-	Log("ReceiveSettings: " + inAction + " context: " + inContext + " payload: " + inPayload.dump());
+	LogEvent("ReceiveSettings: " + inAction + " context: " + inContext + " payload: " + inPayload.dump());
 	json settings;
 	EPLJSONUtils::GetObjectByName(inPayload, "settings", settings);
 	auto refresh_time = EPLJSONUtils::GetIntByName(settings, "refresh_time");
@@ -493,7 +498,7 @@ void MediaStreamDeckPlugin::StartButtonHandler(int period, const std::string& co
 void MediaStreamDeckPlugin::TitleParametersDidChange(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)
 {
 	// We use this event to fish out the title text size and adjust the handler's text width based on it.
-	Log("TitleParametersDidChange: " + inAction + " context: " + inContext + " payload: " + inPayload.dump());
+	LogEvent("TitleParametersDidChange: " + inAction + " context: " + inContext + " payload: " + inPayload.dump());
 	json params;
 	EPLJSONUtils::GetObjectByName(inPayload, "titleParameters", params);
 	auto font_size = EPLJSONUtils::GetIntByName(params, "fontSize");

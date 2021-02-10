@@ -57,6 +57,13 @@ void __cdecl dbgprintf(const char *format, ...);
 using json = nlohmann::json;
 
 
+// Configuration for event logging
+
+#define LOG_SESSIONS 0
+#define LOG_EVENTS 0
+#define LOG_MESSAGES 0
+#define LOG_EXCEPTIONS 1
+
 //-------------------------------------------------------------------
 // websocketpp
 //-------------------------------------------------------------------

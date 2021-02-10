@@ -65,7 +65,7 @@ void ESDConnectionManager::OnMessage(websocketpp::connection_hdl, WebsocketClien
 	{
 		std::string message = inMsg->get_payload();
 		DebugPrint("OnMessage: %s\n", message.c_str());
-#if DEBUG
+#if LOG_MESSAGES
 		LogMessage("OnMessage: " + message);
 #endif
 

@@ -49,6 +49,8 @@ private:
 
 	void LogSessions();
 	void Log(const std::string& message);
+	void LogEvent(const std::string& message);
+	void LogException(const std::string& message);
 
 	void MediaChangedHandler(winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSession const& sender, winrt::Windows::Media::Control::MediaPropertiesChangedEventArgs  const& args);
 	void PlaybackChangedHandler(winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSession const& sender, winrt::Windows::Media::Control::PlaybackInfoChangedEventArgs const& args);
