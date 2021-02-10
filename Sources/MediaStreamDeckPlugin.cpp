@@ -21,14 +21,16 @@
 #include <winrt/Windows.Graphics.Imaging.h>
 #include <winrt/Windows.Security.Cryptography.h>
 
+using namespace winrt;
 using namespace Windows::Graphics::Imaging;
-using namespace Windows::Storage::Streams;
+using namespace Windows::Media::Control;
 using namespace Windows::Security::Cryptography;
+using namespace Windows::Storage::Streams;
 
 class ButtonHandler
 {
 public:
-    ButtonHandler() :_execute(false), textWidth(0) { }
+    ButtonHandler() :_execute(false), textWidth(0), currentTick(0), doRefresh(false) { }
 
     ~ButtonHandler()
     {
@@ -99,32 +101,47 @@ public:
         return (_execute.load(std::memory_order_acquire) && _thd.joinable());
     }
 
-	int currentTick;
 
 private:
     std::atomic<bool> _execute;
-    std::thread _thd;
-
-
-	bool doRefresh;
 	int textWidth;
+	int currentTick;
+	bool doRefresh;
+
+    std::thread _thd;
 	std::mutex mutex;
 };
 
 MediaStreamDeckPlugin::MediaStreamDeckPlugin()
 {
+	// This isn't caught by an exception handler because if this fails, the plugin is not going
+	// to work, so might as well just crash then and there.
 	mMgr = GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
 
-	mMgr.CurrentSessionChanged([this](GlobalSystemMediaTransportControlsSessionManager const& sender, CurrentSessionChangedEventArgs const& args) {
-		if (this != nullptr && this->mConnectionManager != nullptr) {
-			Log("Current Session Changed detected");
-			LogSessions();
-			auto currentSession = sender.GetCurrentSession();
-			if (currentSession != nullptr) {
-				currentSession.MediaPropertiesChanged({ this, &MediaStreamDeckPlugin::MediaChangedHandler });
-				currentSession.PlaybackInfoChanged({ this, &MediaStreamDeckPlugin::PlaybackChangedHandler });
-			}
+	mMgr.SessionsChanged([this](GlobalSystemMediaTransportControlsSessionManager const& sender, SessionsChangedEventArgs const& args) {
+		if (this != nullptr) {
+			Log("Sessions Changed detected");
+			// If the sessions have changed, just cancel all our existing handlers and register new ones. This is infrequent
+			// and simplifies keeping everything in sync.
 
+			auto sessions = sender.GetSessions();
+			for (const auto& session : sessions) {
+				std::string key = UTF8Encode(session.SourceAppUserModelId().c_str());
+				auto session_handler = mSessionHandlers.find(key);
+				if (session_handler != mSessionHandlers.end()) {
+					auto handlers = std::move(session_handler->second);
+					auto [media_revoker, properties_revoker] = std::move(handlers);
+					media_revoker.revoke();
+					properties_revoker.revoke();
+					mSessionHandlers.erase(session_handler);
+				}
+
+				Log("Added handler for " + key);
+				auto media_revoker = session.MediaPropertiesChanged(winrt::auto_revoke, { this, &MediaStreamDeckPlugin::MediaChangedHandler });
+				auto properties_revoker = session.PlaybackInfoChanged(winrt::auto_revoke, { this, &MediaStreamDeckPlugin::PlaybackChangedHandler });
+				auto handlers = std::make_tuple(std::move(media_revoker), std::move(properties_revoker));
+				mSessionHandlers.emplace(key, std::move(handlers));
+			}
 		}
 	});
 
@@ -180,7 +197,7 @@ void MediaStreamDeckPlugin::PlaybackChangedHandler(GlobalSystemMediaTransportCon
 	}
 }
 
-int MediaStreamDeckPlugin::RefreshTimer(int tick, const std::string& context, bool refresh, int textWidth)
+int MediaStreamDeckPlugin::HandleButton(int tick, const std::string& context, bool refresh, int textWidth)
 {
 	//
 	// This is running in an independent thread. The object calling this is initialized in multiple steps.
@@ -195,7 +212,6 @@ int MediaStreamDeckPlugin::RefreshTimer(int tick, const std::string& context, bo
 		{
 			std::lock_guard<std::mutex> lock(mButtonDataMutex);
 			if (refresh) {
-				Log("Context " + context + " doing refresh");
 				mConnectionManager->SetImage(mImage, context, kESDSDKTarget_HardwareAndSoftware);
 			}
 			wtitle = mTitle;
@@ -239,102 +255,112 @@ void MediaStreamDeckPlugin::CheckMedia() {
 
 	std::wstring currentTitle;
 
-	// Get the current session. There may not be one at startup or we just happen to catch them switching apps.
-	auto currentSession = mMgr.GetCurrentSession();
-	if (currentSession != nullptr) {
-		auto properties = currentSession.TryGetMediaPropertiesAsync().get();
+	try {
+		// Get the current session. There may not be one at startup or we just happen to catch them switching apps.
+		auto currentSession = mMgr.GetCurrentSession();
+		if (currentSession != nullptr) {
+			auto properties = currentSession.TryGetMediaPropertiesAsync().get();
 
-		if (properties != nullptr) {
-			auto title = properties.Title();
-			auto info = currentSession.GetPlaybackInfo();
-			if (info != nullptr) {
-				auto status = info.PlaybackStatus();
-
-				if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
-					currentTitle = title;
-				}
-			}
-		}
-	}
-
-	// If the current session isn't playing (or doesn't exist), let's see if they have something playing somewhere else. 
-	// This isn't perfect because Chrome will hide multiple playing videos behind a single session and only report
-	// focused tabs, so we may not get anything if that playing tab isn't active.
-	if (currentTitle.empty()) {
-		auto sessions = mMgr.GetSessions();
-
-		for (const auto &session: sessions) {
-			auto properties = session.TryGetMediaPropertiesAsync().get();
 			if (properties != nullptr) {
 				auto title = properties.Title();
-				auto info = session.GetPlaybackInfo();
+				auto info = currentSession.GetPlaybackInfo();
 				if (info != nullptr) {
 					auto status = info.PlaybackStatus();
 
 					if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
 						currentTitle = title;
-						currentSession = session;
-						break;
 					}
 				}
 			}
 		}
-	}
 
-	std::string currentImage;
+		// If the current session isn't playing (or doesn't exist), let's see if they have something playing somewhere else. 
+		// This isn't perfect because Chrome will hide multiple playing videos behind a single session and only report
+		// focused tabs, so we may not get anything if that playing tab isn't active.
+		if (currentTitle.empty()) {
+			auto sessions = mMgr.GetSessions();
 
-	if (!currentTitle.empty()) {
-		// We need to try drawing whenever we have a title. I'm seeing two MediaPropertiesChangedEvents. The first one covers the title and what not,
-		// the second one is the thumbnail. I don't want to have to rely on that always being the case, so I just fetch the thumbnail every time
-		// and it all ends up eventually correct.
-		auto properties = currentSession.TryGetMediaPropertiesAsync().get();
+			for (const auto& session : sessions) {
+				auto properties = session.TryGetMediaPropertiesAsync().get();
+				if (properties != nullptr) {
+					auto title = properties.Title();
+					auto info = session.GetPlaybackInfo();
+					if (info != nullptr) {
+						auto status = info.PlaybackStatus();
 
-		if (properties != nullptr) {
-			auto thumbnail = properties.Thumbnail();
-
-			if (thumbnail != nullptr) {
-				// The decoder is auto-configuring so it'll read the input data (which has always been PNG so far)
-				// but it needs to be encoded as a base64-encoded string of PNG data.
-				auto stream = thumbnail.OpenReadAsync().get();
-				auto decoder = BitmapDecoder::CreateAsync(stream).get();
-
-				// Scale the image down to 72x72 for the button by applying the transform here and requesting 72x72 on the encoder.
-				BitmapTransform transform;
-				transform.ScaledHeight(72);
-				transform.ScaledWidth(72);
-				auto pixels = decoder.GetPixelDataAsync(BitmapPixelFormat::Bgra8, BitmapAlphaMode::Straight, transform, ExifOrientationMode::RespectExifOrientation, ColorManagementMode::ColorManageToSRgb).get();
-				InMemoryRandomAccessStream outStream;
-				auto encoder = BitmapEncoder::CreateAsync(BitmapEncoder::PngEncoderId(), outStream).get();
-				auto dpiX = decoder.DpiX();
-				auto dpiY = decoder.DpiY();
-				auto pixelData = pixels.DetachPixelData();
-				encoder.SetPixelData(decoder.BitmapPixelFormat(), BitmapAlphaMode::Ignore, 72, 72, dpiX, dpiY, pixelData);
-				encoder.FlushAsync().get();
-
-				// At this point outStream has the PNG-encoded data. We reset the stream for reading, create a buffer to hold the data
-				// and read into the buffer.
-				outStream.Seek(0);
-				auto size = static_cast<uint32_t>(outStream.Size());
-				auto buffer = Buffer(size);
-				outStream.ReadAsync(buffer, size, InputStreamOptions::None).get();
-
-				// Finally we generate the base64-encoded string, UTF8Encode that to convert from wstring to string and we're done!
-				auto encoded = CryptographicBuffer::EncodeToBase64String(buffer);
-				currentImage = UTF8Encode(encoded.c_str());
-				Log("Fetched background image for " + UTF8Encode(currentTitle) + " size: " + std::to_string(outStream.Size()) + " encoded length: " + std::to_string(currentImage.size()));
+						if (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing) {
+							currentTitle = title;
+							currentSession = session;
+							break;
+						}
+					}
+				}
 			}
 		}
+
+		std::string currentImage;
+
+		if (!currentTitle.empty()) {
+			// We need to try drawing whenever we have a title. I'm seeing two MediaPropertiesChangedEvents. The first one covers the title and what not,
+			// the second one is the thumbnail. I don't want to have to rely on that always being the case, so I just fetch the thumbnail every time
+			// and it all ends up eventually correct.
+			auto properties = currentSession.TryGetMediaPropertiesAsync().get();
+
+			if (properties != nullptr) {
+				auto thumbnail = properties.Thumbnail();
+
+				if (thumbnail != nullptr) {
+					// The decoder is auto-configuring so it'll read the input data (which has always been PNG so far)
+					// but it needs to be encoded as a base64-encoded string of PNG data.
+					auto stream = thumbnail.OpenReadAsync().get();
+					auto decoder = BitmapDecoder::CreateAsync(stream).get();
+
+					// Scale the image down to 72x72 for the button by applying the transform here and requesting 72x72 on the encoder.
+					BitmapTransform transform;
+					transform.ScaledHeight(72);
+					transform.ScaledWidth(72);
+					auto pixels = decoder.GetPixelDataAsync(BitmapPixelFormat::Bgra8, BitmapAlphaMode::Straight, transform, ExifOrientationMode::RespectExifOrientation, ColorManagementMode::ColorManageToSRgb).get();
+					InMemoryRandomAccessStream outStream;
+					auto encoder = BitmapEncoder::CreateAsync(BitmapEncoder::PngEncoderId(), outStream).get();
+					auto dpiX = decoder.DpiX();
+					auto dpiY = decoder.DpiY();
+					auto pixelData = pixels.DetachPixelData();
+					encoder.SetPixelData(decoder.BitmapPixelFormat(), BitmapAlphaMode::Ignore, 72, 72, dpiX, dpiY, pixelData);
+					encoder.FlushAsync().get();
+
+					// At this point outStream has the PNG-encoded data. We reset the stream for reading, create a buffer to hold the data
+					// and read into the buffer.
+					outStream.Seek(0);
+					auto size = static_cast<uint32_t>(outStream.Size());
+					auto buffer = Buffer(size);
+					outStream.ReadAsync(buffer, size, InputStreamOptions::None).get();
+
+					// Finally we generate the base64-encoded string, UTF8Encode that to convert from wstring to string and we're done!
+					auto encoded = CryptographicBuffer::EncodeToBase64String(buffer);
+					currentImage = UTF8Encode(encoded.c_str());
+					Log("Fetched background image for " + UTF8Encode(currentTitle) + " size: " + std::to_string(outStream.Size()) + " encoded length: " + std::to_string(currentImage.size()));
+				}
+			}
+		}
+
+		// Update the variables to indicate the current title and thumbnail
+		{
+			std::lock_guard<std::mutex> lock(mButtonDataMutex);
+			mImage = currentImage;
+			mTitle = currentTitle;
+		}
+
+		// Tell all buttons we have new data and go get it!
+		RefreshAllHandlers();
+
+	}
+	catch (winrt::hresult_error e) {
+		Log("WinRT exception " + UTF8Encode(e.message().c_str()));
 	}
 
-	// Update the variables to indicate the current title and thumbnail
-	{
-		std::lock_guard<std::mutex> lock(mButtonDataMutex);
-		mImage = currentImage;
-		mTitle = currentTitle;
+	catch (...) {
+		Log("CheckMedia recovered from exception");
 	}
-
-	// Tell all buttons we have new data and go get it!
-	RefreshAllHandlers();
 }
 
 void MediaStreamDeckPlugin::RefreshAllHandlers()
@@ -349,28 +375,45 @@ void MediaStreamDeckPlugin::RefreshAllHandlers()
 void MediaStreamDeckPlugin::LogSessions()
 {
 #if DEBUG
-	auto sessions = mMgr.GetSessions();
+	try {
+		auto cur = mMgr.GetCurrentSession();
+		if (cur != nullptr) {
+			Log("CurrentSession: " + UTF8Encode(cur.SourceAppUserModelId().c_str()));
+		}
+		else {
+			Log("No CurrentSession");
+		}
+		auto sessions = mMgr.GetSessions();
 
-	if (sessions.Size() == 0) {
-		Log("No Sessions");
-		return;
+		if (sessions.Size() == 0) {
+			Log("No Sessions");
+			return;
+		}
+
+		auto i = 0;
+		for (const auto& session : sessions) {
+			++i;
+			auto properties = session.TryGetMediaPropertiesAsync().get();
+			auto message = "Session #" + std::to_string(i) + " ";
+			if (properties != nullptr) {
+				message += "App: " + UTF8Encode(session.SourceAppUserModelId().c_str()) + " ";
+				auto title = properties.Title();
+				message += winrt::to_string(title);
+				auto info = session.GetPlaybackInfo();
+				if (info != nullptr) {
+					auto status = info.PlaybackStatus();
+					message += " (" + std::to_string(static_cast<int>(status)) + ")";
+				}
+			}
+			Log(message);
+		}
+	}
+	catch (winrt::hresult_error e) {
+		Log("WinRT exception " + UTF8Encode(e.message().c_str()));
 	}
 
-	auto i = 0;
-	for (const auto& session : sessions) {
-		++i;
-		auto properties = session.TryGetMediaPropertiesAsync().get();
-		auto message = "Session #" + std::to_string(i) + " ";
-		if (properties != nullptr) {
-			auto title = properties.Title();
-			message += winrt::to_string(title);
-			auto info = session.GetPlaybackInfo();
-			if (info != nullptr) {
-				auto status = info.PlaybackStatus();
-				message += " (" + std::to_string(static_cast<int>(status)) + ")";
-			}
-		}
-		Log(message);
+	catch (...) {
+		Log("LogSessions recovered from exception");
 	}
 #endif
 }
@@ -426,10 +469,10 @@ void MediaStreamDeckPlugin::ReceiveSettings(const std::string& inAction, const s
 	mConnectionManager->SetTitle("", inContext, kESDSDKTarget_HardwareAndSoftware);
 
 	// This resets the display timer for the settings for this view.
-	StartRefreshTimer(refresh_time, inContext);
+	StartButtonHandler(refresh_time, inContext);
 }
 
-void MediaStreamDeckPlugin::StartRefreshTimer(int period, const std::string& context)
+void MediaStreamDeckPlugin::StartButtonHandler(int period, const std::string& context)
 {
 	std::lock_guard<std::mutex> lock(mContextHandlersMutex);
 
@@ -443,7 +486,7 @@ void MediaStreamDeckPlugin::StartRefreshTimer(int period, const std::string& con
 	handler->set_refresh(true);
 	handler->start(period, [this, context, handler](int tick)
 	{
-		return this->RefreshTimer(tick, context, handler->refresh(), handler->text_width());
+		return this->HandleButton(tick, context, handler->refresh(), handler->text_width());
 	});
 }
 
@@ -462,29 +505,5 @@ void MediaStreamDeckPlugin::TitleParametersDidChange(const std::string& inAction
 	if (existing != mContextHandlers.end()) {
 		existing->second->set_text_width(72 / (font_size / 2));
 	}
-}
-void MediaStreamDeckPlugin::KeyDownForAction(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)
-{
-	// Nothing to do
-}
-
-void MediaStreamDeckPlugin::KeyUpForAction(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)
-{
-	// Nothing to do
-}
-
-void MediaStreamDeckPlugin::DeviceDidConnect(const std::string& inDeviceID, const json& inDeviceInfo)
-{
-	// Nothing to do
-}
-
-void MediaStreamDeckPlugin::DeviceDidDisconnect(const std::string& inDeviceID)
-{
-	// Nothing to do
-}
-
-void MediaStreamDeckPlugin::SendToPlugin(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID)
-{
-	// Nothing to do
 }
 

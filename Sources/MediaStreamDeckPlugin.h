@@ -12,48 +12,46 @@
 //==============================================================================
 
 #include "Common/ESDBasePlugin.h"
+
 #include <mutex>
 #include <set>
+#include <map>
 
 #include <winrt/base.h>
 #include <winrt/Windows.Media.Control.h>
 #include <winrt/Windows.Foundation.Collections.h>
-
-using namespace winrt;
-using namespace Windows::Media::Control;
 
 class ButtonHandler;
 
 class MediaStreamDeckPlugin : public ESDBasePlugin
 {
 public:
-	
 	MediaStreamDeckPlugin();
 	virtual ~MediaStreamDeckPlugin();
-	
-	void KeyDownForAction(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID) override;
-	void KeyUpForAction(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID) override;
-	
-	void WillAppearForAction(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID) override;
-	void WillDisappearForAction(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID) override;
-	
-	void DeviceDidConnect(const std::string& inDeviceID, const json &inDeviceInfo) override;
-	void DeviceDidDisconnect(const std::string& inDeviceID) override;
-	
-	void SendToPlugin(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID) override;
-	void ReceiveSettings(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID) override;
-	void TitleParametersDidChange(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID) override;
+
+	void WillAppearForAction(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID);
+	void WillDisappearForAction(const std::string& inAction, const std::string& inContext, const json &inPayload, const std::string& inDeviceID);
+	void ReceiveSettings(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID);
+	void TitleParametersDidChange(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID);
+
+	void DeviceDidConnect(const std::string& inDeviceID, const json& inDeviceInfo) {};
+	void DeviceDidDisconnect(const std::string& inDeviceID) {};
+	void KeyDownForAction(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID) {};
+	void KeyUpForAction(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID) {};
+	void SendToPlugin(const std::string& inAction, const std::string& inContext, const json& inPayload, const std::string& inDeviceID) {};
+
 private:
-	void StartRefreshTimer(int period, const std::string& context);
-	int RefreshTimer(int tick, const std::string& context, bool refresh, int textWidth);
+	void StartButtonHandler(int period, const std::string& context);
+	int HandleButton(int tick, const std::string& context, bool refresh, int textWidth);
 	void CheckMedia();
 
 	void RefreshAllHandlers();
 
 	void LogSessions();
 	void Log(const std::string& message);
-	void MediaChangedHandler(GlobalSystemMediaTransportControlsSession const& sender, MediaPropertiesChangedEventArgs  const& args);
-	void PlaybackChangedHandler(GlobalSystemMediaTransportControlsSession const& sender, PlaybackInfoChangedEventArgs const& args);
+
+	void MediaChangedHandler(winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSession const& sender, winrt::Windows::Media::Control::MediaPropertiesChangedEventArgs  const& args);
+	void PlaybackChangedHandler(winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSession const& sender, winrt::Windows::Media::Control::PlaybackInfoChangedEventArgs const& args);
 
 	std::string UTF8Encode(const std::wstring& wstr);
 
@@ -64,5 +62,10 @@ private:
 	std::string mImage;
 	std::mutex mButtonDataMutex; // protects mTitle, mImage
 
-	IGlobalSystemMediaTransportControlsSessionManager mMgr{ nullptr };
+	using MediaPropertiesChanged_revoker = winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSession::MediaPropertiesChanged_revoker;
+	using PlaybackInfoChanged_revoker = winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSession::PlaybackInfoChanged_revoker;
+
+	std::map<std::string, std::tuple<MediaPropertiesChanged_revoker, PlaybackInfoChanged_revoker>> mSessionHandlers;
+
+	winrt::Windows::Media::Control::IGlobalSystemMediaTransportControlsSessionManager mMgr{ nullptr };
 };

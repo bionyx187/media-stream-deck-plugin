@@ -10,8 +10,6 @@
 **/
 //==============================================================================
 
-#include "pch.h"
-
 void __cdecl dbgprintf(const char *format, ...)
 {
 	va_list arg;

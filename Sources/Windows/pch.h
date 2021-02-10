@@ -38,6 +38,8 @@
 	#define DEBUG 0
 #endif
 
+#define ASIO_STANDALONE
+
 void __cdecl dbgprintf(const char *format, ...);
 
 #if DEBUG
@@ -60,8 +62,5 @@ using json = nlohmann::json;
 //-------------------------------------------------------------------
 
 #pragma once
-
-
-
 
 #endif //PCH_H
